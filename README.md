@@ -2,6 +2,8 @@
 
 A lightweight coding agent written in Go.
 
+<img width="1440" height="900" alt="image" src="https://github.com/user-attachments/assets/1dfbbbc4-cba7-43f1-9ee8-b214d6bbb449" />
+
 Cogent runs in your terminal and can read, edit, and create files, execute shell commands, and search your codebase — all with confirmation prompts before any destructive action.
 
 ## Setup
