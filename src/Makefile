@@ -1,9 +1,11 @@
 .PHONY: build clean install
-BINARY := go-agent
+BINARY := cogent
+BINDIR := ../bin
 GOFLAGS := -ldflags="-s -w" -trimpath
 build:
-	CGO_ENABLED=0 go build $(GOFLAGS) -o $(BINARY) .
+	mkdir -p $(BINDIR)
+	CGO_ENABLED=0 go build $(GOFLAGS) -o $(BINDIR)/$(BINARY) .
 install: build
-	cp $(BINARY) /usr/local/bin/$(BINARY)
+	cp $(BINDIR)/$(BINARY) /usr/local/bin/$(BINARY)
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINDIR)/$(BINARY)

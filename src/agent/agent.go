@@ -25,7 +25,7 @@ type Agent struct {
 	system    string
 	onText    func(string)
 	onTool    func(string, string)
-	onConfirm func(name, summary string) bool
+	onConfirm func(name string, input map[string]any) bool
 }
 
 type Option func(*Agent)
@@ -38,7 +38,7 @@ func WithToolCallback(fn func(string, string)) Option {
 	return func(a *Agent) { a.onTool = fn }
 }
 
-func WithConfirmCallback(fn func(name, summary string) bool) Option {
+func WithConfirmCallback(fn func(name string, input map[string]any) bool) Option {
 	return func(a *Agent) { a.onConfirm = fn }
 }
 
@@ -49,7 +49,7 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		system:    fmt.Sprintf(systemPrompt, cwd),
 		onText:    func(s string) {},
 		onTool:    func(n, s string) {},
-		onConfirm: func(name, summary string) bool { return true },
+		onConfirm: func(name string, input map[string]any) bool { return true },
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -103,7 +103,7 @@ func (a *Agent) executeTool(block api.ContentBlock) api.ContentBlock {
 	}
 	summary := summarizeInput(block.Name, block.Input)
 	a.onTool(block.Name, summary)
-	if tool.RequiresConfirmation() && !a.onConfirm(block.Name, summary) {
+	if tool.RequiresConfirmation() && !a.onConfirm(block.Name, block.Input) {
 		return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true)
 	}
 	result, err := tool.Execute(block.Input)

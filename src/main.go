@@ -57,7 +57,7 @@ func selfUpdate() error {
 		return fmt.Errorf("build failed: %w", err)
 	}
 
-	binary := filepath.Join(src, "go-agent")
+	binary := filepath.Join(src, "cogent")
 	if _, err := os.Stat(binary); err != nil {
 		return fmt.Errorf("binary not found after build: %w", err)
 	}
@@ -66,6 +66,49 @@ func selfUpdate() error {
 
 	// Replace current process with the new binary.
 	return syscall.Exec(binary, os.Args, os.Environ())
+}
+
+func showDiff(name string, input map[string]any) {
+	str := func(key string) string { s, _ := input[key].(string); return s }
+	switch name {
+	case "edit":
+		old := str("old_string")
+		new := str("new_string")
+		for _, line := range strings.Split(old, "\n") {
+			fmt.Printf("  %s- %s%s\n", red, line, reset)
+		}
+		for _, line := range strings.Split(new, "\n") {
+			fmt.Printf("  %s+ %s%s\n", green, line, reset)
+		}
+	case "write":
+		path := str("file_path")
+		content := str("content")
+		if _, err := os.Stat(path); err != nil {
+			// New file — show all lines as additions.
+			for _, line := range strings.Split(content, "\n") {
+				fmt.Printf("  %s+ %s%s\n", green, line, reset)
+			}
+		} else {
+			// Existing file — unified diff.
+			cmd := exec.Command("diff", "-u", path, "-")
+			cmd.Stdin = strings.NewReader(content)
+			out, _ := cmd.CombinedOutput()
+			for _, line := range strings.Split(string(out), "\n") {
+				switch {
+				case strings.HasPrefix(line, "-"):
+					fmt.Printf("  %s%s%s\n", red, line, reset)
+				case strings.HasPrefix(line, "+"):
+					fmt.Printf("  %s%s%s\n", green, line, reset)
+				case strings.HasPrefix(line, "@@"):
+					fmt.Printf("  %s%s%s\n", cyan, line, reset)
+				default:
+					fmt.Printf("  %s%s%s\n", dim, line, reset)
+				}
+			}
+		}
+	case "bash":
+		fmt.Printf("  %s$ %s%s\n", dim, str("command"), reset)
+	}
 }
 
 func main() {
@@ -94,14 +137,23 @@ func main() {
 			}
 			fmt.Printf("%s%s %s%s %s%s\n", dim, color, name, reset, dim, summary+reset)
 		}),
-		agent.WithConfirmCallback(func(name, summary string) bool {
+		agent.WithConfirmCallback(func(name string, input map[string]any) bool {
+			str := func(key string) string { s, _ := input[key].(string); return s }
+			summary := str("file_path")
+			if summary == "" {
+				summary = str("command")
+				if len(summary) > 80 {
+					summary = summary[:80] + "..."
+				}
+			}
+			showDiff(name, input)
 			fmt.Printf("%s%sAllow %s %s? [Y/n]%s ", bold, yellow, name, summary, reset)
 			line, _ := reader.ReadString('\n')
 			line = strings.TrimSpace(strings.ToLower(line))
 			return line == "" || line == "y" || line == "yes"
 		}),
 	)
-	fmt.Printf("%s%s agent %s— busybox coding assistant%s\n", bold, cyan, reset+dim, reset)
+	fmt.Printf("%s%s cogent %s— coding agent%s\n", bold, cyan, reset+dim, reset)
 	fmt.Printf("%smodel: %s | cwd: %s%s\n\n", dim, client.Model(), cwd, reset)
 	if len(os.Args) > 1 {
 		prompt := strings.Join(os.Args[1:], " ")
