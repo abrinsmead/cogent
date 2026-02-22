@@ -90,7 +90,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -294,13 +294,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInput(msg)
 		}
 
-	case tea.MouseMsg:
-		// Forward mouse wheel events to viewport for scrolling.
-		var cmd tea.Cmd
-		m.output, cmd = m.output.Update(msg)
-		m.scrollback = !m.output.AtBottom()
-		cmds = append(cmds, cmd)
-
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -356,14 +349,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.state == tuiStateInput {
-		// Don't forward mouse events to the textarea — they show up as
-		// raw escape sequences in the input box.
-		if _, isMouse := msg.(tea.MouseMsg); !isMouse {
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			m.recalcInputHeight()
-			cmds = append(cmds, cmd)
-		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		m.recalcInputHeight()
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -552,9 +541,9 @@ func (m tuiModel) View() string {
 	statusContent := m.renderStatusBar()
 
 	// Draw box around prompt + status bar
-	topBorder := tuiBorder.Render("┌" + strings.Repeat("─", innerWidth) + "┐")
+	topBorder := tuiBorder.Render("╭" + strings.Repeat("─", innerWidth) + "╮")
 	midBorder := tuiBorder.Render("├" + strings.Repeat("─", innerWidth) + "┤")
-	botBorder := tuiBorder.Render("└" + strings.Repeat("─", innerWidth) + "┘")
+	botBorder := tuiBorder.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
 	leftEdge := tuiBorder.Render("│")
 	rightEdge := tuiBorder.Render("│")
 
