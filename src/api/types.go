@@ -84,18 +84,30 @@ type Property struct {
 	Default     any      `json:"default,omitempty"`
 }
 
+type CacheControl struct {
+	Type string `json:"type"`
+}
+
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema ToolInputSchema `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  ToolInputSchema `json:"input_schema"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+}
+
+// SystemBlock is a content block within the system prompt array.
+type SystemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type Request struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
-	Messages  []Message `json:"messages"`
-	Tools     []ToolDef `json:"tools,omitempty"`
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	System    []SystemBlock `json:"system,omitempty"`
+	Messages  []Message     `json:"messages"`
+	Tools     []ToolDef     `json:"tools,omitempty"`
 }
 
 type Response struct {

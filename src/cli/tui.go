@@ -140,6 +140,8 @@ type tuiModel struct {
 
 	// Status bar stats
 	contextUsed int     // tokens used in last response (input + output)
+	cacheRead   int     // cache read tokens in last response
+	cacheCreate int     // cache creation tokens in last response
 	lastCost    float64 // cost of last API call
 	totalCost   float64 // cumulative cost
 }
@@ -319,6 +321,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tuiUsageMsg:
 		m.contextUsed = msg.usage.ContextUsed()
+		m.cacheRead = msg.usage.CacheReadInputTokens
+		m.cacheCreate = msg.usage.CacheCreationInputTokens
 		cost := m.client.CostForUsage(msg.usage)
 		m.lastCost = cost
 		m.totalCost += cost
@@ -706,10 +710,13 @@ func (m tuiModel) renderStatusBar() string {
 		modeStr = tuiModeConfirm.Render("Confirm")
 	}
 
-	// Context: used / total
+	// Context: used / total + cache info
 	contextTotal := m.client.ContextWindow()
 	contextStr := tuiStatusBar.Render(fmt.Sprintf("%s/%s",
 		formatTokens(m.contextUsed), formatTokens(contextTotal)))
+	if m.cacheRead > 0 {
+		contextStr += tuiGreen.Render(fmt.Sprintf(" ⚡%s cached", formatTokens(m.cacheRead)))
+	}
 
 	// Cost
 	lastCostStr := tuiStatusBar.Render(formatCost(m.lastCost))
