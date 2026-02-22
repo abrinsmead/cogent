@@ -108,6 +108,67 @@ monorepo/
 | `ANTHROPIC_MODEL` | Model (default: `claude-opus-4-6`) |
 | `ANTHROPIC_BASE_URL` | Custom API base URL |
 
+## Custom Tools
+
+Cogent supports user-defined tools as executable scripts. Place them in `.cogent/tools/` (project-local) or `~/.cogent/tools/` (global). Project-local tools take precedence over global ones with the same name.
+
+### Creating a Tool
+
+Any executable file with a `@tool` directive in its comments is picked up automatically. The script receives input as JSON on stdin and writes output to stdout.
+
+```bash
+#!/bin/bash
+# @tool greet
+# @description Say hello to someone
+# @param name string required "Who to greet"
+# @noconfirm
+
+INPUT=$(cat)
+NAME=$(echo "$INPUT" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+echo "Hello, $NAME!"
+```
+
+```sh
+chmod +x .cogent/tools/greet
+```
+
+Scripts can be written in any language — bash, Python, Node, etc. — as long as they have a shebang and are executable.
+
+### Directives
+
+| Directive | Description |
+|-----------|-------------|
+| `@tool <name>` | **(required)** Tool name as exposed to the agent |
+| `@description <text>` | What the tool does (shown to the model) |
+| `@param <name> <type> [required] "<desc>"` | Input parameter. Type is `string`, `number`, or `boolean` |
+| `@env <VAR> [required] "<desc>"` | Environment variable dependency. Tools with missing required env vars are skipped |
+| `@confirm` | Require user confirmation before running *(default)* |
+| `@noconfirm` | Run without confirmation (for read-only tools) |
+
+Comment prefixes `#`, `//`, and `--` are all recognized, so the directive format works in bash, Go/JS, SQL, and similar languages.
+
+### Environment Variables
+
+Create a `.cogent/.env` file to set environment variables for custom tools:
+
+```
+LINEAR_API_KEY=lin_api_...
+LINEAR_USERNAME=jane.doe
+```
+
+Variables are loaded before tool discovery, so `@env required` checks will see them. Explicit environment variables take precedence — `.env` only sets values that aren't already defined.
+
+### Bundled Examples
+
+This project includes several custom tools in `.cogent/tools/`:
+
+| Tool | Description |
+|------|-------------|
+| `btc_price` | Get the current Bitcoin spot price via the Coinbase API |
+| `linear_tickets` | List Linear tickets assigned to a user |
+| `linear_ticket` | Get full details of a Linear ticket by ID |
+| `linear_update_ticket` | Update a Linear ticket's status, title, priority, or assignee |
+
 ## Not Yet Implemented
 
 Cogent is deliberately minimal. Things it doesn't do (yet):

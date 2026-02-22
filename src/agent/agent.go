@@ -55,16 +55,26 @@ func CyclePermissionMode(m PermissionMode) PermissionMode {
 	return (m + 1) % numModes
 }
 
+// ConfirmResult represents the user's response to a tool confirmation prompt.
+type ConfirmResult int
+
+const (
+	ConfirmDeny   ConfirmResult = iota // deny this tool call
+	ConfirmAllow                       // allow this tool call
+	ConfirmAlways                      // allow this tool call and skip future prompts for this tool
+)
+
 type Agent struct {
 	client       *api.Client
 	registry     *tools.Registry
 	messages     []api.Message
 	system       string
 	permMode     PermissionMode
+	allowedTools map[string]bool // tools the user has "always allowed" for this session
 	onText       func(string)
 	onTool       func(string, string)
 	onToolResult func(name string, result string, isError bool)
-	onConfirm    func(name string, input map[string]any) bool
+	onConfirm    func(name string, input map[string]any) ConfirmResult
 	onUsage      func(api.Usage)
 }
 
@@ -82,7 +92,7 @@ func WithToolResultCallback(fn func(name string, result string, isError bool)) O
 	return func(a *Agent) { a.onToolResult = fn }
 }
 
-func WithConfirmCallback(fn func(name string, input map[string]any) bool) Option {
+func WithConfirmCallback(fn func(name string, input map[string]any) ConfirmResult) Option {
 	return func(a *Agent) { a.onConfirm = fn }
 }
 
@@ -108,10 +118,11 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		client:       client,
 		registry:     registry,
 		system:       system,
+		allowedTools: make(map[string]bool),
 		onText:       func(s string) {},
 		onTool:       func(n, s string) {},
 		onToolResult: func(name, result string, isError bool) {},
-		onConfirm:    func(name string, input map[string]any) bool { return true },
+		onConfirm:    func(name string, input map[string]any) ConfirmResult { return ConfirmAllow },
 		onUsage:      func(u api.Usage) {},
 	}
 	for _, opt := range opts {
@@ -233,14 +244,19 @@ func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
 	summary := summarizeInput(block.Name, block.Input)
 	a.onTool(block.Name, summary)
 
-	if tool.RequiresConfirmation() {
+	if tool.RequiresConfirmation() && !a.allowedTools[block.Name] {
 		switch a.permMode {
 		case ModePlan, ModeTerminal:
 			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only)", true), true
 		case ModeYOLO:
 			// Auto-approve, skip confirmation callback.
 		default: // ModeConfirm
-			if !a.onConfirm(block.Name, block.Input) {
+			switch a.onConfirm(block.Name, block.Input) {
+			case ConfirmAlways:
+				a.allowedTools[block.Name] = true
+			case ConfirmAllow:
+				// proceed
+			default: // ConfirmDeny
 				return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
 			}
 		}
@@ -283,10 +299,16 @@ func summarizeInput(name string, input map[string]any) string {
 	return fmt.Sprintf("%v", input)
 }
 
-func (a *Agent) Reset() { a.messages = nil }
+func (a *Agent) Reset() {
+	a.messages = nil
+	a.allowedTools = make(map[string]bool)
+}
 
 func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode = m }
 func (a *Agent) GetPermissionMode() PermissionMode  { return a.permMode }
+
+// AllowedTools returns the set of tool names that have been "always allowed" for this session.
+func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }
 
 const maxHistory = 100
 

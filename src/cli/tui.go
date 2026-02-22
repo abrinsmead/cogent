@@ -105,7 +105,7 @@ type tuiInitialPromptMsg struct{}
 type tuiConfirmMsg struct {
 	name  string
 	input map[string]any
-	reply chan bool
+	reply chan agent.ConfirmResult
 }
 
 // ─── Bubble Tea model ────────────────────────────────────────────────────────
@@ -208,8 +208,8 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 				msgCh <- tuiAppendMsg{text: tuiYellow.Render(fmt.Sprintf("  ... output truncated (%d lines shown)", maxLines))}
 			}
 		}),
-		agent.WithConfirmCallback(func(name string, input map[string]any) bool {
-			reply := make(chan bool)
+		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
+			reply := make(chan agent.ConfirmResult)
 			msgCh <- tuiConfirmMsg{name: name, input: input, reply: reply}
 			return <-reply
 		}),
@@ -326,7 +326,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = tuiStateConfirm
 		m.appendLine(tuiRenderDiff(msg.name, msg.input))
 		summary := SummarizeConfirm(msg.name, msg.input)
-		m.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n] ", msg.name, summary)))
+		m.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", msg.name, summary)))
 		cmds = append(cmds, m.waitForMsg())
 
 	case tuiDoneMsg:
@@ -396,6 +396,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "/help":
 			m.appendLine(tuiDim.Render("Commands: /help /clear /quit"))
 			m.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
+			m.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
 			m.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
 			m.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
 			return m, nil
@@ -429,7 +430,7 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
 		m.appendLine(tuiRed.Render("  ✗ denied (interrupted)"))
-		m.confirm.reply <- false
+		m.confirm.reply <- agent.ConfirmDeny
 		m.confirm = nil
 		if m.cancelFn != nil {
 			m.cancelFn()
@@ -440,7 +441,7 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyEnter:
 		m.appendLine(tuiGreen.Render("  ✓ allowed"))
-		m.confirm.reply <- true
+		m.confirm.reply <- agent.ConfirmAllow
 		m.confirm = nil
 		m.state = tuiStateRunning
 		return m, nil
@@ -450,13 +451,20 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch ch {
 		case "y":
 			m.appendLine(tuiGreen.Render("  ✓ allowed"))
-			m.confirm.reply <- true
+			m.confirm.reply <- agent.ConfirmAllow
 			m.confirm = nil
 			m.state = tuiStateRunning
 			return m, nil
 		case "n":
 			m.appendLine(tuiRed.Render("  ✗ denied"))
-			m.confirm.reply <- false
+			m.confirm.reply <- agent.ConfirmDeny
+			m.confirm = nil
+			m.state = tuiStateRunning
+			return m, nil
+		case "a":
+			toolName := m.confirm.name
+			m.appendLine(tuiGreen.Render(fmt.Sprintf("  ✓ always allow %s", toolName)))
+			m.confirm.reply <- agent.ConfirmAlways
 			m.confirm = nil
 			m.state = tuiStateRunning
 			return m, nil
@@ -526,7 +534,7 @@ func (m tuiModel) View() string {
 	var promptContent string
 	switch m.state {
 	case tuiStateConfirm:
-		promptContent = tuiStatus.Render(" y/n ")
+		promptContent = tuiStatus.Render(" y/n/a ")
 	case tuiStateRunning:
 		if m.agent.GetPermissionMode() == agent.ModeTerminal {
 			promptContent = tuiStatus.Render(" running... ") + tuiDim.Render("(ctrl+c to interrupt)")

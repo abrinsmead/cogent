@@ -1,0 +1,161 @@
+#!/bin/bash
+# @tool linear_ticket
+# @description Get full details of a Linear ticket by its identifier (e.g. ABR-14). Returns title, description, status, priority, assignee, labels, comments, and related issues.
+# @param ticket_id string required "The ticket identifier, e.g. ABR-14, ENG-123"
+# @env LINEAR_API_KEY required "Linear API key (personal or OAuth token)"
+# @noconfirm
+
+set -euo pipefail
+
+INPUT=$(cat)
+
+TICKET_ID=$(echo "$INPUT" | sed -n 's/.*"ticket_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+if [ -z "$LINEAR_API_KEY" ]; then
+  echo "Error: LINEAR_API_KEY environment variable is not set." >&2
+  exit 1
+fi
+
+if [ -z "$TICKET_ID" ]; then
+  echo "Error: ticket_id is required (e.g. ABR-14)." >&2
+  exit 1
+fi
+
+# Uppercase the ticket ID for consistency
+TICKET_ID=$(echo "$TICKET_ID" | tr '[:lower:]' '[:upper:]')
+
+# Split identifier into team key and number
+TEAM_KEY=$(echo "$TICKET_ID" | sed 's/-.*//')
+ISSUE_NUM=$(echo "$TICKET_ID" | sed 's/.*-//')
+
+# Fetch the issue by team key + number using issueVcsByFilter is not available,
+# so we use the filter on identifier
+QUERY=$(cat <<EOF
+{"query":"{ issues(filter: { team: { key: { eq: \"$TEAM_KEY\" } }, number: { eq: $ISSUE_NUM } }) { nodes { identifier title description state { name } priority priorityLabel assignee { name displayName email } team { name key } project { name } cycle { name number } labels { nodes { name } } estimate url createdAt updatedAt completedAt dueDate comments { nodes { body user { name } createdAt } } relations { nodes { type relatedIssue { identifier title state { name } } } } children { nodes { identifier title state { name } } } parent { identifier title state { name } } } } }"}
+EOF
+)
+
+RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -d "$QUERY")
+
+if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
+  echo "Error: failed to fetch ticket from Linear API." >&2
+  exit 1
+fi
+
+# Check for GraphQL errors
+echo "$RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+" 2>&1 || { echo "Raw response: $RESPONSE" >&2; exit 1; }
+
+# Format output
+echo "$RESPONSE" | python3 -c "
+import sys, json
+
+data = json.load(sys.stdin)
+issues = data.get('data', {}).get('issues', {}).get('nodes', [])
+
+if not issues:
+    print('No ticket found matching $TICKET_ID.')
+    sys.exit(0)
+
+issue = issues[0]
+
+identifier = issue.get('identifier', '?')
+title = issue.get('title', 'Untitled')
+description = issue.get('description') or 'No description.'
+state = issue.get('state', {}).get('name', 'Unknown')
+priority = issue.get('priorityLabel', 'None')
+estimate = issue.get('estimate')
+url = issue.get('url', '')
+created = issue.get('createdAt', '')[:10]
+updated = issue.get('updatedAt', '')[:10]
+completed = issue.get('completedAt')
+due_date = issue.get('dueDate')
+
+assignee = issue.get('assignee')
+team = issue.get('team', {}).get('name', '')
+project = issue.get('project', {}).get('name') if issue.get('project') else None
+cycle = issue.get('cycle')
+labels = [l['name'] for l in issue.get('labels', {}).get('nodes', [])]
+comments = issue.get('comments', {}).get('nodes', [])
+relations = issue.get('relations', {}).get('nodes', [])
+children = issue.get('children', {}).get('nodes', [])
+parent = issue.get('parent')
+
+# Header
+print(f'[{identifier}] {title}')
+print(f'{url}')
+print('=' * 60)
+
+# Metadata
+print(f'  Status:    {state}')
+print(f'  Priority:  {priority}')
+if assignee:
+    print(f'  Assignee:  {assignee[\"name\"]}')
+else:
+    print(f'  Assignee:  Unassigned')
+print(f'  Team:      {team}')
+if project:
+    print(f'  Project:   {project}')
+if cycle:
+    print(f'  Cycle:     {cycle.get(\"name\", \"\")} (#{cycle.get(\"number\", \"\")})')
+if labels:
+    print(f'  Labels:    {', '.join(labels)}')
+if estimate:
+    print(f'  Estimate:  {estimate}')
+if due_date:
+    print(f'  Due:       {due_date}')
+print(f'  Created:   {created}')
+print(f'  Updated:   {updated}')
+if completed:
+    print(f'  Completed: {completed[:10]}')
+
+# Description
+print()
+print('Description:')
+print('-' * 40)
+print(description)
+
+# Parent
+if parent:
+    print()
+    print('Parent:')
+    print(f'  [{parent[\"identifier\"]}] {parent[\"title\"]} ({parent[\"state\"][\"name\"]})')
+
+# Sub-issues
+if children:
+    print()
+    print(f'Sub-issues ({len(children)}):')
+    for c in children:
+        print(f'  [{c[\"identifier\"]}] {c[\"title\"]} ({c[\"state\"][\"name\"]})')
+
+# Relations
+if relations:
+    print()
+    print(f'Related issues ({len(relations)}):')
+    for r in relations:
+        rel = r.get('relatedIssue', {})
+        rtype = r.get('type', 'related')
+        print(f'  {rtype}: [{rel.get(\"identifier\",\"?\")}] {rel.get(\"title\",\"\")} ({rel.get(\"state\",{}).get(\"name\",\"\")})')
+
+# Comments
+if comments:
+    print()
+    print(f'Comments ({len(comments)}):')
+    for c in comments:
+        author = c.get('user', {}).get('name', 'Unknown')
+        date = c.get('createdAt', '')[:10]
+        body = c.get('body', '').strip()
+        print(f'  [{date}] {author}:')
+        for line in body.split('\n'):
+            print(f'    {line}')
+        print()
+"

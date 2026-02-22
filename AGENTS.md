@@ -9,6 +9,13 @@ Cogent is a lightweight terminal-based coding agent powered by the Anthropic API
 ```
 cogent/
 ├── Makefile              # build, install, clean targets
+├── .cogent/
+│   ├── .env              # env vars for custom tools (gitignored)
+│   └── tools/            # project-local custom tool scripts
+│       ├── btc_price
+│       ├── linear_ticket
+│       ├── linear_tickets
+│       └── linear_update_ticket
 ├── src/
 │   ├── main.go           # entry point — flag parsing, mode detection
 │   ├── go.mod
@@ -32,6 +39,8 @@ cogent/
 │       ├── glob.go       # file pattern matching
 │       ├── grep.go       # regex search
 │       ├── ls.go         # directory listing
+│       ├── custom.go     # custom tool loader, .env parser, @ directive parser
+│       ├── custom_test.go
 │       └── glob_test.go  # tests for glob tool
 └── bin/                  # build output (gitignored)
 ```
@@ -69,6 +78,15 @@ Four modes cycle via Shift+Tab: Confirm → Plan → YOLO → Terminal. Plan mod
 ### Tools
 
 Every tool implements `tools.Tool` (Definition, Execute, RequiresConfirmation). Destructive tools (`bash`, `write`, `edit`) require confirmation. `write` and `edit` are path-sandboxed to the working directory via `safepath.go`.
+
+### Custom Tools (`tools/custom.go`)
+
+- User-defined tools are executable scripts with `@` directives in comments (`@tool`, `@description`, `@param`, `@env`, `@confirm`/`@noconfirm`).
+- Discovered from `.cogent/tools/` (project-local, takes precedence) and `~/.cogent/tools/` (global).
+- `.cogent/.env` is loaded before discovery via `LoadDotEnv` so `@env required` checks see the values.
+- Scripts receive JSON on stdin, return output on stdout. 120s execution timeout.
+- `ANTHROPIC_API_KEY` is scrubbed from the subprocess environment.
+- Custom tools require confirmation by default (`@confirm`); read-only tools use `@noconfirm`.
 
 ### UI Modes
 

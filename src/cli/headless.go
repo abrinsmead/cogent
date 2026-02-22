@@ -55,8 +55,8 @@ func (h *Headless) Run() error {
 			}
 		}),
 		// Auto-approve everything in headless mode.
-		agent.WithConfirmCallback(func(name string, input map[string]any) bool {
-			return true
+		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
+			return agent.ConfirmAllow
 		}),
 	)
 
