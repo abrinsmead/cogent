@@ -99,9 +99,14 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	if extra := loadAgentsMD(cwd); extra != "" {
 		system += "\n\n" + extra
 	}
+	registry := tools.NewRegistry(cwd)
+	// Only inject custom tool instructions if .cogent/tools/ exists
+	if tools.CustomToolsExist(cwd) {
+		system += "\n\n" + tools.CustomToolsPrompt
+	}
 	a := &Agent{
 		client:       client,
-		registry:     tools.NewRegistry(cwd),
+		registry:     registry,
 		system:       system,
 		onText:       func(s string) {},
 		onTool:       func(n, s string) {},
@@ -111,6 +116,10 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	}
 	for _, opt := range opts {
 		opt(a)
+	}
+	// Surface any custom tool warnings via the text callback
+	for _, w := range registry.Warnings() {
+		a.onText("⚠ " + w)
 	}
 	return a
 }

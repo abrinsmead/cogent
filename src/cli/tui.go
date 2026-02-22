@@ -190,7 +190,7 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 				return
 			}
 			// Truncate very long results to keep the viewport manageable
-			const maxLines = 200
+			const maxLines = 3
 			lines := strings.Split(result, "\n")
 			truncated := false
 			if len(lines) > maxLines {

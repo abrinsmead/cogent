@@ -37,7 +37,7 @@ func (h *Headless) Run() error {
 			if result == "" {
 				return
 			}
-			const maxLines = 200
+			const maxLines = 3
 			lines := strings.Split(result, "\n")
 			truncated := len(lines) > maxLines
 			if truncated {
