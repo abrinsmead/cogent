@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
@@ -31,6 +32,27 @@ func (h *Headless) Run() error {
 				color = Red
 			}
 			fmt.Printf("%s%s %s%s %s%s\n", Dim, color, name, Reset, Dim, summary+Reset)
+		}),
+		agent.WithToolResultCallback(func(name, result string, isError bool) {
+			if result == "" {
+				return
+			}
+			const maxLines = 200
+			lines := strings.Split(result, "\n")
+			truncated := len(lines) > maxLines
+			if truncated {
+				lines = lines[:maxLines]
+			}
+			color := Dim
+			if isError {
+				color = Red
+			}
+			for _, line := range lines {
+				fmt.Printf("%s  %s%s\n", color, line, Reset)
+			}
+			if truncated {
+				fmt.Printf("%s%s  ... output truncated (%d lines shown)%s\n", Bold, Yellow, maxLines, Reset)
+			}
 		}),
 		// Auto-approve everything in headless mode.
 		agent.WithConfirmCallback(func(name string, input map[string]any) bool {

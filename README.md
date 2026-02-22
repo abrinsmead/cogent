@@ -71,6 +71,17 @@ cogent --ui=headless "run the test suite and fix any failures"
 
 All write operations (`bash`, `write`, `edit`) require explicit confirmation with a diff preview.
 
+## Permission Modes
+
+Cycle through modes with **Shift+Tab** in the TUI:
+
+| Mode | Description |
+|------|-------------|
+| **Confirm** | Asks before executing destructive tools (default) |
+| **Plan** | Read-only — the agent can only read and plan, no writes |
+| **YOLO** | Auto-approves all tool calls without asking |
+| **Terminal** | Input goes to the shell directly — run commands yourself |
+
 ## REPL Commands
 
 Available in **tui** and **basic** modes:

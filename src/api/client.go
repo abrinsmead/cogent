@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,6 +139,10 @@ func (c *Client) CostForUsage(u Usage) float64 {
 }
 
 func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef) (*Response, error) {
+	return c.SendMessageCtx(context.Background(), system, messages, tools)
+}
+
+func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []ToolDef) (*Response, error) {
 	req := Request{
 		Model:     c.model,
 		MaxTokens: 8192,
@@ -154,7 +159,7 @@ func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef)
 	backoff := 2 * time.Second
 
 	for attempt := range maxRetries {
-		httpReq, err := http.NewRequest("POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
@@ -172,7 +177,11 @@ func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef)
 		}
 		// Retry on rate-limit or overloaded errors
 		if (resp.StatusCode == 429 || resp.StatusCode == 529) && attempt < maxRetries-1 {
-			time.Sleep(backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
 			backoff *= 2
 			continue
 		}

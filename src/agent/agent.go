@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -18,15 +19,51 @@ Guidelines:
 - Use emojis sparingly — only when they genuinely aid clarity, never for decoration
 - Current working directory: %s`
 
+// PermissionMode controls how tool confirmations are handled.
+type PermissionMode int
+
+const (
+	// ModeConfirm asks the user before executing destructive tools (default).
+	ModeConfirm PermissionMode = iota
+	// ModePlan disallows all destructive tools — the agent can only read/plan.
+	ModePlan
+	// ModeYOLO auto-approves every tool invocation without asking.
+	ModeYOLO
+	// ModeTerminal pauses the agent — user input goes to the shell directly.
+	ModeTerminal
+)
+
+const numModes = 4
+
+func (m PermissionMode) String() string {
+	switch m {
+	case ModePlan:
+		return "Plan"
+	case ModeYOLO:
+		return "YOLO"
+	case ModeTerminal:
+		return "Terminal"
+	default:
+		return "Confirm"
+	}
+}
+
+// CyclePermissionMode returns the next mode: Confirm → Plan → YOLO → Terminal → Confirm.
+func CyclePermissionMode(m PermissionMode) PermissionMode {
+	return (m + 1) % numModes
+}
+
 type Agent struct {
-	client    *api.Client
-	registry  *tools.Registry
-	messages  []api.Message
-	system    string
-	onText    func(string)
-	onTool    func(string, string)
-	onConfirm func(name string, input map[string]any) bool
-	onUsage   func(api.Usage)
+	client       *api.Client
+	registry     *tools.Registry
+	messages     []api.Message
+	system       string
+	permMode     PermissionMode
+	onText       func(string)
+	onTool       func(string, string)
+	onToolResult func(name string, result string, isError bool)
+	onConfirm    func(name string, input map[string]any) bool
+	onUsage      func(api.Usage)
 }
 
 type Option func(*Agent)
@@ -39,6 +76,10 @@ func WithToolCallback(fn func(string, string)) Option {
 	return func(a *Agent) { a.onTool = fn }
 }
 
+func WithToolResultCallback(fn func(name string, result string, isError bool)) Option {
+	return func(a *Agent) { a.onToolResult = fn }
+}
+
 func WithConfirmCallback(fn func(name string, input map[string]any) bool) Option {
 	return func(a *Agent) { a.onConfirm = fn }
 }
@@ -47,15 +88,20 @@ func WithUsageCallback(fn func(api.Usage)) Option {
 	return func(a *Agent) { a.onUsage = fn }
 }
 
+func WithPermissionMode(m PermissionMode) Option {
+	return func(a *Agent) { a.permMode = m }
+}
+
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	a := &Agent{
-		client:    client,
-		registry:  tools.NewRegistry(cwd),
-		system:    fmt.Sprintf(systemPrompt, cwd),
-		onText:    func(s string) {},
-		onTool:    func(n, s string) {},
-		onConfirm: func(name string, input map[string]any) bool { return true },
-		onUsage:   func(u api.Usage) {},
+		client:       client,
+		registry:     tools.NewRegistry(cwd),
+		system:       fmt.Sprintf(systemPrompt, cwd),
+		onText:       func(s string) {},
+		onTool:       func(n, s string) {},
+		onToolResult: func(name, result string, isError bool) {},
+		onConfirm:    func(name string, input map[string]any) bool { return true },
+		onUsage:      func(u api.Usage) {},
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -64,14 +110,25 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 }
 
 func (a *Agent) Send(userMessage string) error {
-	a.messages = append(a.messages, api.UserMessage(userMessage))
-	return a.loop()
+	return a.SendCtx(context.Background(), userMessage)
 }
 
-func (a *Agent) loop() error {
+func (a *Agent) SendCtx(ctx context.Context, userMessage string) error {
+	a.messages = append(a.messages, api.UserMessage(userMessage))
+	return a.loop(ctx)
+}
+
+func (a *Agent) loop(ctx context.Context) error {
 	for i := 0; i < 50; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		a.trimHistory()
-		resp, err := a.client.SendMessage(a.system, a.messages, a.registry.Definitions())
+		system := a.system
+		if a.permMode == ModePlan {
+			system += "\n\nIMPORTANT: You are in planning mode. You may only use read-only tools (read, glob, grep, ls). Do NOT use bash, write, or edit. Instead, describe what changes you would make and why."
+		}
+		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, a.registry.Definitions())
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
 		}
@@ -128,13 +185,26 @@ func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
 	}
 	summary := summarizeInput(block.Name, block.Input)
 	a.onTool(block.Name, summary)
-	if tool.RequiresConfirmation() && !a.onConfirm(block.Name, block.Input) {
-		return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
+
+	if tool.RequiresConfirmation() {
+		switch a.permMode {
+		case ModePlan, ModeTerminal:
+			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only)", true), true
+		case ModeYOLO:
+			// Auto-approve, skip confirmation callback.
+		default: // ModeConfirm
+			if !a.onConfirm(block.Name, block.Input) {
+				return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
+			}
+		}
 	}
+
 	result, err := tool.Execute(block.Input)
 	if err != nil {
+		a.onToolResult(block.Name, fmt.Sprintf("Error: %s", err), true)
 		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true), false
 	}
+	a.onToolResult(block.Name, result, false)
 	return api.ToolResultBlock(block.ID, result, false), false
 }
 
@@ -167,6 +237,9 @@ func summarizeInput(name string, input map[string]any) string {
 }
 
 func (a *Agent) Reset() { a.messages = nil }
+
+func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode = m }
+func (a *Agent) GetPermissionMode() PermissionMode  { return a.permMode }
 
 const maxHistory = 100
 

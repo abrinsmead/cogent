@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/rivo/uniseg"
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
@@ -39,22 +42,37 @@ var (
 	tuiStatus = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8"))
 
+	tuiBorder = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8"))
+
 	tuiStatusBar = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("7")).
-			Background(lipgloss.Color("236"))
+			Foreground(lipgloss.Color("7"))
 
 	tuiStatusKey = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("4")).
-			Background(lipgloss.Color("236")).
 			Bold(true)
 
 	tuiStatusGitClean = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2")).
-				Background(lipgloss.Color("236"))
+				Foreground(lipgloss.Color("2"))
 
 	tuiStatusGitDirty = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("3")).
-				Background(lipgloss.Color("236"))
+				Foreground(lipgloss.Color("3"))
+
+	tuiModePlan = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("4")) // blue
+
+	tuiModeConfirm = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("2")) // green
+
+	tuiModeYOLO = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("1")) // red
+
+	tuiModeTerminal = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("3")) // yellow
 )
 
 // ─── TUI (public wrapper) ───────────────────────────────────────────────────
@@ -71,7 +89,7 @@ func NewTUI(client *api.Client, cwd string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -80,6 +98,7 @@ func (t *TUI) Run() error {
 
 type tuiAppendMsg struct{ text string }
 type tuiDoneMsg struct{ err error }
+type tuiShellDoneMsg struct{ err error }
 type tuiUsageMsg struct{ usage api.Usage }
 type tuiConfirmMsg struct {
 	name  string
@@ -97,6 +116,8 @@ const (
 	tuiStateConfirm
 )
 
+const maxInputHeight = 10 // max lines the input area can grow to
+
 type tuiModel struct {
 	agent    *agent.Agent
 	client   *api.Client
@@ -108,8 +129,11 @@ type tuiModel struct {
 	input    textarea.Model
 	lines    []string
 	confirm  *tuiConfirmMsg
-	quitting bool
-	msgCh    chan tea.Msg
+	quitting    bool
+	scrollback  bool                // true when user has scrolled up from bottom
+	cancelFn    context.CancelFunc  // cancels the in-flight agent call
+	msgCh       chan tea.Msg
+	inputHeight int                 // current visual height of the input area
 
 	// Status bar stats
 	contextUsed int     // tokens used in last response (input + output)
@@ -133,12 +157,13 @@ func newTUIModel(client *api.Client, cwd string) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
 	m := tuiModel{
-		client: client,
-		cwd:    cwd,
-		input:  ta,
-		output: vp,
-		state:  tuiStateInput,
-		msgCh:  msgCh,
+		client:      client,
+		cwd:         cwd,
+		input:       ta,
+		output:      vp,
+		state:       tuiStateInput,
+		msgCh:       msgCh,
+		inputHeight: 1,
 	}
 
 	m.agent = agent.New(client, cwd,
@@ -153,6 +178,29 @@ func newTUIModel(client *api.Client, cwd string) tuiModel {
 			}
 			line := tuiDim.Render(" "+style.Render(name)) + " " + tuiDim.Render(summary)
 			msgCh <- tuiAppendMsg{text: line}
+		}),
+		agent.WithToolResultCallback(func(name, result string, isError bool) {
+			if result == "" {
+				return
+			}
+			// Truncate very long results to keep the viewport manageable
+			const maxLines = 200
+			lines := strings.Split(result, "\n")
+			truncated := false
+			if len(lines) > maxLines {
+				lines = lines[:maxLines]
+				truncated = true
+			}
+			style := tuiDim
+			if isError {
+				style = tuiRed
+			}
+			for _, line := range lines {
+				msgCh <- tuiAppendMsg{text: style.Render("  " + line)}
+			}
+			if truncated {
+				msgCh <- tuiAppendMsg{text: tuiYellow.Render(fmt.Sprintf("  ... output truncated (%d lines shown)", maxLines))}
+			}
 		}),
 		agent.WithConfirmCallback(func(name string, input map[string]any) bool {
 			reply := make(chan bool)
@@ -188,6 +236,47 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Scrollback keys: PgUp/PgDn work in any state.
+		switch msg.Type {
+		case tea.KeyPgUp:
+			var cmd tea.Cmd
+			m.output, cmd = m.output.Update(msg)
+			m.scrollback = !m.output.AtBottom()
+			return m, cmd
+		case tea.KeyPgDown:
+			var cmd tea.Cmd
+			m.output, cmd = m.output.Update(msg)
+			m.scrollback = !m.output.AtBottom()
+			return m, cmd
+		case tea.KeyShiftTab:
+			// Cycle permission mode: Confirm → Plan → YOLO → Terminal → Confirm
+			if m.state == tuiStateInput {
+				newMode := agent.CyclePermissionMode(m.agent.GetPermissionMode())
+				m.agent.SetPermissionMode(newMode)
+				var style lipgloss.Style
+				switch newMode {
+				case agent.ModePlan:
+					style = tuiModePlan
+				case agent.ModeYOLO:
+					style = tuiModeYOLO
+				case agent.ModeTerminal:
+					style = tuiModeTerminal
+				default:
+					style = tuiModeConfirm
+				}
+				// Update prompt character based on mode
+				if newMode == agent.ModeTerminal {
+					m.input.Prompt = "$ "
+					m.input.Placeholder = "Run a command..."
+				} else {
+					m.input.Prompt = "❯ "
+					m.input.Placeholder = "Ask anything..."
+				}
+				m.appendLine(tuiDim.Render("  mode → ") + style.Render(newMode.String()))
+				return m, nil
+			}
+		}
+
 		switch m.state {
 		case tuiStateConfirm:
 			return m.handleConfirm(msg)
@@ -195,10 +284,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInput(msg)
 		}
 
+	case tea.MouseMsg:
+		// Forward mouse wheel events to viewport for scrolling.
+		var cmd tea.Cmd
+		m.output, cmd = m.output.Update(msg)
+		m.scrollback = !m.output.AtBottom()
+		cmds = append(cmds, cmd)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.resize()
+		m.resize()             // update widths first
+		m.recalcInputHeight()  // then recalc with new wrap width
 
 	case tuiAppendMsg:
 		m.appendLine(msg.text)
@@ -227,12 +324,26 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLine("")
 		m.input.Focus()
 		cmds = append(cmds, textarea.Blink)
+
+	case tuiShellDoneMsg:
+		m.state = tuiStateInput
+		if msg.err != nil {
+			m.appendLine(tuiRed.Render("Error: " + msg.err.Error()))
+		}
+		m.appendLine("")
+		m.input.Focus()
+		cmds = append(cmds, textarea.Blink)
 	}
 
 	if m.state == tuiStateInput {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		cmds = append(cmds, cmd)
+		// Don't forward mouse events to the textarea — they show up as
+		// raw escape sequences in the input box.
+		if _, isMouse := msg.(tea.MouseMsg); !isMouse {
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.recalcInputHeight()
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -241,6 +352,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		if m.state == tuiStateRunning {
+			// Interrupt the in-flight agent call instead of quitting.
+			if m.cancelFn != nil {
+				m.cancelFn()
+				m.cancelFn = nil
+			}
+			m.appendLine(tuiDim.Render("  ⏎ interrupted"))
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
 
@@ -250,6 +370,9 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.Reset()
+		m.inputHeight = 1
+		m.input.SetHeight(1)
+		m.resize()
 
 		switch value {
 		case "/quit", "/exit", "/q":
@@ -263,8 +386,18 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "/help":
 			m.appendLine(tuiDim.Render("Commands: /help /clear /quit"))
+			m.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
+			m.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
 			m.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
 			return m, nil
+		}
+
+		// Terminal mode: run as shell command
+		if m.agent.GetPermissionMode() == agent.ModeTerminal {
+			m.appendLine(tuiYellow.Render("$ " + value))
+			m.state = tuiStateRunning
+			m.input.Blur()
+			return m, m.runShellCommand(value)
 		}
 
 		m.appendLine(tuiPrompt.Render("❯ " + value))
@@ -275,6 +408,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		m.recalcInputHeight()
 		return m, cmd
 	}
 }
@@ -285,10 +419,15 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Type {
 	case tea.KeyCtrlC:
+		m.appendLine(tuiRed.Render("  ✗ denied (interrupted)"))
 		m.confirm.reply <- false
 		m.confirm = nil
-		m.quitting = true
-		return m, tea.Quit
+		if m.cancelFn != nil {
+			m.cancelFn()
+			m.cancelFn = nil
+		}
+		m.state = tuiStateRunning
+		return m, nil
 
 	case tea.KeyEnter:
 		m.appendLine(tuiGreen.Render("  ✓ allowed"))
@@ -318,9 +457,43 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) sendToAgent(prompt string) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFn = cancel
 	return func() tea.Msg {
-		err := m.agent.Send(prompt)
+		err := m.agent.SendCtx(ctx, prompt)
+		if err != nil && ctx.Err() != nil {
+			// Cancelled by user — not a real error.
+			return tuiDoneMsg{err: nil}
+		}
 		return tuiDoneMsg{err: err}
+	}
+}
+
+func (m *tuiModel) runShellCommand(command string) tea.Cmd {
+	return func() tea.Msg {
+		cmd := exec.Command("sh", "-c", command)
+		cmd.Dir = m.cwd
+		// Scrub API key from subprocess environment.
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+				cmd.Env = append(cmd.Env, e)
+			}
+		}
+		out, err := cmd.CombinedOutput()
+		output := strings.TrimRight(string(out), "\n")
+		if output != "" {
+			for _, line := range strings.Split(output, "\n") {
+				m.msgCh <- tuiAppendMsg{text: tuiDim.Render("  " + line)}
+			}
+		}
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				m.msgCh <- tuiAppendMsg{text: tuiRed.Render(fmt.Sprintf("  (exit code %d)", exitErr.ExitCode()))}
+				return tuiShellDoneMsg{err: nil}
+			}
+			return tuiShellDoneMsg{err: err}
+		}
+		return tuiShellDoneMsg{err: nil}
 	}
 }
 
@@ -331,21 +504,65 @@ func (m tuiModel) View() string {
 		return tuiDim.Render("Goodbye!") + "\n"
 	}
 
+	innerWidth := m.width - 2 // account for left+right border chars
+	if innerWidth < 0 {
+		innerWidth = 0
+	}
+
 	var b strings.Builder
 	b.WriteString(m.output.View())
 	b.WriteString("\n")
 
+	// Build the prompt content
+	var promptContent string
 	switch m.state {
 	case tuiStateConfirm:
-		b.WriteString(tuiStatus.Render(" y/n "))
+		promptContent = tuiStatus.Render(" y/n ")
 	case tuiStateRunning:
-		b.WriteString(tuiStatus.Render(" thinking... "))
+		if m.agent.GetPermissionMode() == agent.ModeTerminal {
+			promptContent = tuiStatus.Render(" running... ") + tuiDim.Render("(ctrl+c to interrupt)")
+		} else {
+			promptContent = tuiStatus.Render(" thinking... ") + tuiDim.Render("(ctrl+c to interrupt)")
+		}
 	default:
-		b.WriteString(m.input.View())
+		promptContent = m.input.View()
 	}
 
+	// Build status bar content
+	statusContent := m.renderStatusBar()
+
+	// Draw box around prompt + status bar
+	topBorder := tuiBorder.Render("┌" + strings.Repeat("─", innerWidth) + "┐")
+	midBorder := tuiBorder.Render("├" + strings.Repeat("─", innerWidth) + "┤")
+	botBorder := tuiBorder.Render("└" + strings.Repeat("─", innerWidth) + "┘")
+	leftEdge := tuiBorder.Render("│")
+	rightEdge := tuiBorder.Render("│")
+
+	b.WriteString(topBorder)
 	b.WriteString("\n")
-	b.WriteString(m.renderStatusBar())
+
+	// Render prompt lines — the textarea may span multiple visual lines.
+	promptLines := strings.Split(promptContent, "\n")
+	for _, pl := range promptLines {
+		plWidth := lipgloss.Width(pl)
+		if plWidth < innerWidth {
+			pl += strings.Repeat(" ", innerWidth-plWidth)
+		}
+		b.WriteString(leftEdge + pl + rightEdge)
+		b.WriteString("\n")
+	}
+	b.WriteString(midBorder)
+	b.WriteString("\n")
+
+	// Pad status bar to fill the box
+	statusWidth := lipgloss.Width(statusContent)
+	if statusWidth < innerWidth {
+		statusContent += tuiStatusBar.Render(strings.Repeat(" ", innerWidth-statusWidth))
+	}
+
+	b.WriteString(leftEdge + statusContent + rightEdge)
+	b.WriteString("\n")
+	b.WriteString(botBorder)
 
 	return b.String()
 }
@@ -353,18 +570,75 @@ func (m tuiModel) View() string {
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
 
 func (m *tuiModel) resize() {
-	// Layout: viewport + 1 (newline) + input(1 visible line + 2 chrome) + 1 (newline) + status bar(1)
-	inputHeight := 3
-	statusHeight := 2 // newline + status bar
+	// Layout (lines below the viewport):
+	//   1  newline after viewport
+	//   1  top border    ┌───┐
+	//   N  input lines   │...│  (dynamic, 1..maxInputHeight)
+	//   1  mid border    ├───┤
+	//   1  status line   │...│
+	//   1  bottom border └───┘
+	//   = 5 + N
+	chrome := 5 + m.inputHeight
 	m.output.Width = m.width
-	m.output.Height = m.height - inputHeight - statusHeight
-	m.input.SetWidth(m.width)
+	vpHeight := m.height - chrome
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.output.Height = vpHeight
+	m.input.SetWidth(m.width - 2) // account for left+right border
+}
+
+// recalcInputHeight computes how many visual lines the current input text
+// occupies (accounting for soft-wrapping at the terminal width) and resizes
+// the textarea + viewport accordingly.
+func (m *tuiModel) recalcInputHeight() {
+	needed := m.inputVisualLines()
+	if needed < 1 {
+		needed = 1
+	}
+	if needed > maxInputHeight {
+		needed = maxInputHeight
+	}
+	if needed != m.inputHeight {
+		m.inputHeight = needed
+		m.input.SetHeight(needed)
+		m.resize()
+	}
+}
+
+// inputVisualLines returns the number of visual (rendered) lines the current
+// textarea content occupies, accounting for soft wrapping.
+func (m *tuiModel) inputVisualLines() int {
+	value := m.input.Value()
+	if value == "" {
+		return 1
+	}
+
+	// Width() returns the pure text wrapping width (already excludes prompt
+	// width, line numbers, and base style frame).
+	wrapWidth := m.input.Width()
+	if wrapWidth < 1 {
+		wrapWidth = 1
+	}
+
+	total := 0
+	for _, line := range strings.Split(value, "\n") {
+		lineWidth := uniseg.StringWidth(line)
+		if lineWidth == 0 {
+			total++ // empty line still occupies one visual row
+		} else {
+			total += int(math.Ceil(float64(lineWidth) / float64(wrapWidth)))
+		}
+	}
+	return total
 }
 
 func (m *tuiModel) appendLine(text string) {
 	m.lines = append(m.lines, text)
 	m.output.SetContent(strings.Join(m.lines, "\n"))
-	m.output.GotoBottom()
+	if !m.scrollback {
+		m.output.GotoBottom()
+	}
 }
 
 // tuiRenderDiff renders a diff using lipgloss styles for the viewport.
@@ -402,6 +676,20 @@ func (m tuiModel) renderStatusBar() string {
 	// Model
 	model := tuiStatusKey.Render(m.client.Model())
 
+	// Permission mode
+	mode := m.agent.GetPermissionMode()
+	var modeStr string
+	switch mode {
+	case agent.ModePlan:
+		modeStr = tuiModePlan.Render("Plan")
+	case agent.ModeYOLO:
+		modeStr = tuiModeYOLO.Render("YOLO")
+	case agent.ModeTerminal:
+		modeStr = tuiModeTerminal.Render("Terminal")
+	default:
+		modeStr = tuiModeConfirm.Render("Confirm")
+	}
+
 	// Context: used / total
 	contextTotal := m.client.ContextWindow()
 	contextStr := tuiStatusBar.Render(fmt.Sprintf("%s/%s",
@@ -421,6 +709,7 @@ func (m tuiModel) renderStatusBar() string {
 	// Assemble left side
 	left := tuiStatusBar.Render(" ") +
 		model + sep +
+		modeStr + tuiStatusBar.Render(" (shift+tab)") + sep +
 		tuiStatusBar.Render("ctx ") + contextStr + sep +
 		tuiStatusBar.Render("last ") + lastCostStr +
 		tuiStatusBar.Render(" total ") + totalCostStr + sep +
@@ -431,13 +720,6 @@ func (m tuiModel) renderStatusBar() string {
 	}
 
 	left += tuiStatusBar.Render(" ")
-
-	// Pad to full width
-	// We need the visual width, not byte length
-	leftWidth := lipgloss.Width(left)
-	if leftWidth < m.width {
-		left += tuiStatusBar.Render(strings.Repeat(" ", m.width-leftWidth))
-	}
 
 	return left
 }
