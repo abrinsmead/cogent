@@ -10,93 +10,122 @@ Requires Go 1.24+ and an Anthropic API key.
 
 ```sh
 export ANTHROPIC_API_KEY="sk-ant-..."
-```
-
-## Build & Install
-
-```sh
-make build      # outputs to bin/cogent
-make install    # copies to /usr/local/bin/cogent
+make build      # → bin/cogent
+make install    # → /usr/local/bin/cogent
 ```
 
 ## Usage
 
-Cogent supports three UI modes, selected with `--ui` or auto-detected:
+```sh
+cogent                          # interactive TUI
+cogent "explain this codebase"  # single prompt, then exit
+```
 
-| Mode | When | Description |
+The UI mode is auto-detected but can be forced with `--ui`:
+
+| Mode | Auto-selected when | Description |
 |------|------|-------------|
-| `tui` | Interactive TTY, no prompt | Full-screen Bubble Tea interface with scrollable output and inline confirmation |
-| `basic` | TTY with a prompt | Original line-based REPL with ANSI colours and `[Y/n]` confirmation |
-| `headless` | Piped / CI, prompt given | Single-shot, auto-approves all tool calls, no interaction |
-
-**Interactive TUI (default when no prompt given):**
+| `tui` | No prompt, interactive TTY | Full-screen Bubble Tea interface |
+| `basic` | Prompt given, interactive TTY | Line-based REPL with ANSI colours |
+| `headless` | Prompt given, piped / CI | Single-shot, auto-approves all tool calls |
 
 ```sh
-cogent
+cogent --ui=tui                                          # force TUI
+cogent --ui=basic "refactor the handler"                 # force basic
+cogent --ui=headless "run the test suite and fix failures"  # CI
 ```
 
-**Single prompt (basic mode, with confirmation):**
-
-```sh
-cogent "refactor the handler to use middleware"
-```
-
-**Force a specific mode:**
-
-```sh
-cogent --ui=tui
-cogent --ui=basic
-cogent --ui=basic "explain this codebase"
-cogent --ui=headless "fix the typo in README.md"
-```
-
-**Headless in CI / pipes:**
-
-```sh
-echo "list all TODOs" | cogent --ui=basic
-cogent --ui=headless "run the test suite and fix any failures"
-```
-
-## Built-in Tools
+## Tools
 
 | Tool | Description |
 |------|-------------|
-| `bash` | Execute shell commands |
+| `bash` | Execute shell commands (configurable timeout, default 2m, max 10m) |
 | `read` | Read file contents with line numbers |
-| `write` | Write content to a file |
-| `edit` | Search-and-replace edit on a file |
+| `write` | Create or overwrite a file (creates parent directories) |
+| `edit` | Search-and-replace on a file (`old_string` must match exactly once) |
 | `glob` | Find files matching a pattern |
 | `grep` | Search file contents with regex |
 | `ls` | List files and directories |
 
-All write operations (`bash`, `write`, `edit`) require explicit confirmation with a diff preview.
+Destructive tools (`bash`, `write`, `edit`) show a diff preview and require confirmation before executing.
 
 ## Permission Modes
 
-Cycle through modes with **Shift+Tab** in the TUI:
+Cycle with **Shift+Tab** in the TUI:
 
-| Mode | Description |
-|------|-------------|
-| **Confirm** | Asks before executing destructive tools (default) |
-| **Plan** | Read-only — the agent can only read and plan, no writes |
-| **YOLO** | Auto-approves all tool calls without asking |
-| **Terminal** | Input goes to the shell directly — run commands yourself |
+| Mode | Behaviour |
+|------|-----------|
+| **Confirm** | Asks before destructive tools *(default)* |
+| **Plan** | Read-only — agent can only observe and suggest |
+| **YOLO** | Auto-approves every tool call |
+| **Terminal** | Pauses the agent — your input runs as shell commands |
 
-## REPL Commands
+## TUI
 
-Available in **tui** and **basic** modes:
+### Keyboard
+
+| Key | Action |
+|-----|--------|
+| **Enter** | Send message / approve tool call |
+| **Shift+Tab** | Cycle permission mode |
+| **Ctrl+C** | Interrupt running agent, or quit when idle |
+| **PgUp / PgDn** | Scroll output |
+| **Mouse wheel** | Scroll output |
+| **y / n** | Approve or deny at confirmation prompts |
+
+The input area auto-grows as you type (up to 10 lines).
+
+### Status Bar
+
+The bottom bar shows: model name, permission mode, context tokens used, cost (last + total), working directory, and git branch with dirty indicator.
+
+### Commands
 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help |
 | `/clear` | Clear conversation history |
-| `/restart` | Rebuild and restart the agent (basic only) |
 | `/quit` | Exit |
 
-## Environment Variables
+The basic REPL supports the same commands plus `/restart` to rebuild and re-exec the binary.
+
+## AGENTS.md
+
+Cogent supports the [`AGENTS.md` convention](https://github.com/anthropics/AGENTS-md). Any `AGENTS.md` file found in the working directory or a parent directory is appended to the system prompt at startup — giving the agent project-specific context without you having to repeat it each session.
+
+All files from cwd to the filesystem root are collected and concatenated root-first, so in a monorepo the top-level file provides broad context and deeper files add local specifics:
+
+```
+monorepo/
+├── AGENTS.md          # repo-wide (loaded first)
+├── services/
+│   └── api/
+│       └── AGENTS.md  # package-specific (loaded second)
+```
+
+## Configuration
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | **(required)** Your Anthropic API key |
-| `ANTHROPIC_MODEL` | Model to use (default: set by client) |
+| `ANTHROPIC_API_KEY` | **(required)** Anthropic API key |
+| `ANTHROPIC_MODEL` | Model (default: `claude-opus-4-6`) |
 | `ANTHROPIC_BASE_URL` | Custom API base URL |
+
+## Not Yet Implemented
+
+Cogent is deliberately minimal. Things it doesn't do (yet):
+
+- **MCP (Model Context Protocol)** — no support for external tool servers
+- **Custom slash commands** — the only commands are `/help`, `/clear`, `/restart`, `/quit`
+- **Session resume** — conversation history is in-memory only, lost on exit
+- **Streaming** — responses arrive in full, not token-by-token
+- **Multi-model / sub-agents** — single model, single agent loop
+- **Image & vision input** — text only
+- **Configurable system prompt** — hardcoded (aside from `AGENTS.md` injection)
+- **Persistent memory** — no cross-session recall
+
+## Security
+
+- `ANTHROPIC_API_KEY` is scrubbed from the environment of all subprocesses.
+- `write` and `edit` are sandboxed to the current working directory.
+- `ANTHROPIC_BASE_URL` must use HTTPS unless the host is localhost.

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/anthropics/agent/api"
@@ -93,10 +95,14 @@ func WithPermissionMode(m PermissionMode) Option {
 }
 
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
+	system := fmt.Sprintf(systemPrompt, cwd)
+	if extra := loadAgentsMD(cwd); extra != "" {
+		system += "\n\n" + extra
+	}
 	a := &Agent{
 		client:       client,
 		registry:     tools.NewRegistry(cwd),
-		system:       fmt.Sprintf(systemPrompt, cwd),
+		system:       system,
 		onText:       func(s string) {},
 		onTool:       func(n, s string) {},
 		onToolResult: func(name, result string, isError bool) {},
@@ -107,6 +113,38 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		opt(a)
 	}
 	return a
+}
+
+// loadAgentsMD collects AGENTS.md files from cwd up to the filesystem root.
+// In a monorepo, a subdirectory may have its own AGENTS.md with package-specific
+// context while the repo root has a broader one. All found files are concatenated
+// root-first so the most general context comes first and local overrides follow.
+func loadAgentsMD(dir string) string {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return ""
+	}
+	var found []string
+	for {
+		path := filepath.Join(dir, "AGENTS.md")
+		data, err := os.ReadFile(path)
+		if err == nil {
+			content := strings.TrimSpace(string(data))
+			if content != "" {
+				found = append(found, content)
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	// Reverse so root-level comes first, subdirectory-level follows.
+	for i, j := 0, len(found)-1; i < j; i, j = i+1, j-1 {
+		found[i], found[j] = found[j], found[i]
+	}
+	return strings.Join(found, "\n\n")
 }
 
 func (a *Agent) Send(userMessage string) error {
