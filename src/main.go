@@ -18,6 +18,7 @@ const (
 	cyan   = "\033[36m"
 	yellow = "\033[33m"
 	green  = "\033[32m"
+	red    = "\033[31m"
 	dim    = "\033[2m"
 	bold   = "\033[1m"
 )
@@ -83,10 +84,15 @@ func main() {
 
 	ag := agent.New(client, cwd,
 		agent.WithTextCallback(func(text string) {
-			fmt.Println(text)
+			fmt.Printf("%s%s%s\n", dim, text, reset)
 		}),
 		agent.WithToolCallback(func(name, summary string) {
-			fmt.Printf("%s%s %s%s %s%s\n", dim, yellow, name, reset, dim, summary+reset)
+			color := green
+			switch name {
+			case "bash", "write", "edit":
+				color = red
+			}
+			fmt.Printf("%s%s %s%s %s%s\n", dim, color, name, reset, dim, summary+reset)
 		}),
 		agent.WithConfirmCallback(func(name, summary string) bool {
 			fmt.Printf("%s%sAllow %s %s? [Y/n]%s ", bold, yellow, name, summary, reset)
