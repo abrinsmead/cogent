@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Cogent is a lightweight terminal-based coding agent powered by the Anthropic API, written in Go. It provides three UI modes (TUI, basic REPL, headless) and a set of built-in tools for file manipulation and shell access.
+Cogent is a lightweight terminal-based coding agent powered by the Anthropic API, written in Go. It provides two UI modes (TUI and headless) and a set of built-in tools for file manipulation and shell access.
 
 ## Repository Structure
 
@@ -20,7 +20,6 @@ cogent/
 │   ├── cli/
 │   │   ├── cli.go        # CLI interface, ANSI helpers, diff rendering
 │   │   ├── tui.go        # Bubble Tea full-screen UI (viewport, textarea, status bar)
-│   │   ├── basic.go      # line-based REPL with /restart self-update
 │   │   └── headless.go   # single-shot, auto-approve, for CI/pipes
 │   └── tools/
 │       ├── registry.go   # tool registry
@@ -53,7 +52,7 @@ Requires Go 1.24+ and `ANTHROPIC_API_KEY` set.
 
 - The agent sends messages to the API in a loop (max 50 iterations).
 - Each iteration: send conversation → process response blocks (text or tool_use) → collect tool results → repeat if stop_reason is `tool_use`.
-- The system prompt is built once at construction: base prompt + AGENT.md contents (if found) + per-call plan-mode suffix.
+- The system prompt is built once at construction: base prompt + AGENTS.md contents (if found) + per-call plan-mode suffix.
 - History is trimmed to 100 messages, keeping the first message plus the most recent.
 
 ### Permission Modes
@@ -73,8 +72,7 @@ Every tool implements `tools.Tool` (Definition, Execute, RequiresConfirmation). 
 
 ### UI Modes
 
-- **TUI** (`cli/tui.go`): Bubble Tea with viewport + textarea. Async agent calls via goroutine + message channel. Status bar shows model, mode, context, cost, git branch.
-- **Basic** (`cli/basic.go`): Synchronous bufio REPL. Has `/restart` for self-rebuild via `syscall.Exec`.
+- **TUI** (`cli/tui.go`): Bubble Tea with viewport + textarea. Async agent calls via goroutine + message channel. Status bar shows model, mode, context, cost, git branch. Accepts an optional initial prompt via CLI args.
 - **Headless** (`cli/headless.go`): Single prompt, auto-approve, returns on completion.
 
 ## Conventions

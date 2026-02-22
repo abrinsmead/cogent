@@ -42,11 +42,6 @@ func SummarizeConfirm(name string, input map[string]any) string {
 	return summary
 }
 
-// ShowDiff prints a coloured diff preview for a tool invocation to stdout.
-func ShowDiff(name string, input map[string]any) {
-	fmt.Println(RenderDiff(name, input))
-}
-
 // RenderDiff returns a coloured diff preview as a string.
 func RenderDiff(name string, input map[string]any) string {
 	str := func(key string) string { s, _ := input[key].(string); return s }

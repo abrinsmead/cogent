@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	uiMode := flag.String("ui", "", "UI mode: tui, basic, headless (default: auto-detect)")
+	uiMode := flag.String("ui", "", "UI mode: tui, headless (default: auto-detect)")
 	flag.Parse()
 
 	cwd, err := os.Getwd()
@@ -34,16 +34,14 @@ func main() {
 	var c cli.CLI
 	switch mode {
 	case "tui":
-		c = cli.NewTUI(client, cwd)
-	case "basic":
-		c = cli.NewBasic(client, cwd, prompt)
+		c = cli.NewTUI(client, cwd, prompt)
 	case "headless":
 		if prompt == "" {
 			fatal("headless mode requires a prompt argument")
 		}
 		c = cli.NewHeadless(client, cwd, prompt)
 	default:
-		fatal("unknown --ui mode: %q (expected tui, basic, or headless)", mode)
+		fatal("unknown --ui mode: %q (expected tui or headless)", mode)
 	}
 
 	if err := c.Run(); err != nil {
@@ -53,7 +51,7 @@ func main() {
 
 // detectMode picks the best UI based on context:
 //   - prompt given + not a TTY → headless (CI/pipes)
-//   - prompt given + TTY       → basic   (single-shot with confirmation)
+//   - prompt given + TTY       → tui     (interactive, prompt sent as first message)
 //   - no prompt + TTY          → tui     (interactive)
 //   - no prompt + not a TTY    → error
 func detectMode(prompt string) string {
@@ -61,7 +59,7 @@ func detectMode(prompt string) string {
 
 	if prompt != "" {
 		if tty {
-			return "basic"
+			return "tui"
 		}
 		return "headless"
 	}
@@ -70,7 +68,7 @@ func detectMode(prompt string) string {
 		return "tui"
 	}
 
-	fatal("no prompt given and stdin is not a terminal; use --ui=basic or provide a prompt")
+	fatal("no prompt given and stdin is not a terminal; provide a prompt")
 	return "" // unreachable
 }
 

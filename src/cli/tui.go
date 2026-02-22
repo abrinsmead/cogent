@@ -81,14 +81,15 @@ var (
 type TUI struct {
 	client *api.Client
 	cwd    string
+	prompt string // optional initial prompt to send on startup
 }
 
-func NewTUI(client *api.Client, cwd string) *TUI {
-	return &TUI{client: client, cwd: cwd}
+func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
+	return &TUI{client: client, cwd: cwd, prompt: prompt}
 }
 
 func (t *TUI) Run() error {
-	m := newTUIModel(t.client, t.cwd)
+	m := newTUIModel(t.client, t.cwd, t.prompt)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
@@ -100,6 +101,7 @@ type tuiAppendMsg struct{ text string }
 type tuiDoneMsg struct{ err error }
 type tuiShellDoneMsg struct{ err error }
 type tuiUsageMsg struct{ usage api.Usage }
+type tuiInitialPromptMsg struct{}
 type tuiConfirmMsg struct {
 	name  string
 	input map[string]any
@@ -129,11 +131,12 @@ type tuiModel struct {
 	input    textarea.Model
 	lines    []string
 	confirm  *tuiConfirmMsg
-	quitting    bool
-	scrollback  bool                // true when user has scrolled up from bottom
-	cancelFn    context.CancelFunc  // cancels the in-flight agent call
-	msgCh       chan tea.Msg
-	inputHeight int                 // current visual height of the input area
+	quitting       bool
+	scrollback     bool                // true when user has scrolled up from bottom
+	cancelFn       context.CancelFunc  // cancels the in-flight agent call
+	msgCh          chan tea.Msg
+	inputHeight    int                 // current visual height of the input area
+	initialPrompt  string              // if set, sent automatically on Init
 
 	// Status bar stats
 	contextUsed int     // tokens used in last response (input + output)
@@ -141,7 +144,7 @@ type tuiModel struct {
 	totalCost   float64 // cumulative cost
 }
 
-func newTUIModel(client *api.Client, cwd string) tuiModel {
+func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "Ask anything..."
 	ta.Prompt = "❯ "
@@ -157,13 +160,14 @@ func newTUIModel(client *api.Client, cwd string) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
 	m := tuiModel{
-		client:      client,
-		cwd:         cwd,
-		input:       ta,
-		output:      vp,
-		state:       tuiStateInput,
-		msgCh:       msgCh,
-		inputHeight: 1,
+		client:        client,
+		cwd:           cwd,
+		input:         ta,
+		output:        vp,
+		state:         tuiStateInput,
+		msgCh:         msgCh,
+		inputHeight:   1,
+		initialPrompt: prompt,
 	}
 
 	m.agent = agent.New(client, cwd,
@@ -222,7 +226,11 @@ func newTUIModel(client *api.Client, cwd string) tuiModel {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.waitForMsg())
+	cmds := []tea.Cmd{textarea.Blink, m.waitForMsg()}
+	if m.initialPrompt != "" {
+		cmds = append(cmds, func() tea.Msg { return tuiInitialPromptMsg{} })
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m tuiModel) waitForMsg() tea.Cmd {
@@ -296,6 +304,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resize()             // update widths first
 		m.recalcInputHeight()  // then recalc with new wrap width
+
+	case tuiInitialPromptMsg:
+		prompt := m.initialPrompt
+		m.initialPrompt = "" // consume it
+		m.appendLine(tuiPrompt.Render("❯ " + prompt))
+		m.state = tuiStateRunning
+		m.input.Blur()
+		return m, m.sendToAgent(prompt)
 
 	case tuiAppendMsg:
 		m.appendLine(msg.text)

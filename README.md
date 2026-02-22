@@ -18,22 +18,19 @@ make install    # → /usr/local/bin/cogent
 
 ```sh
 cogent                          # interactive TUI
-cogent "explain this codebase"  # single prompt, then exit
+cogent "explain this codebase"  # TUI with initial prompt
 ```
 
-The UI mode is auto-detected but can be forced with `--ui`:
+When a prompt is given and stdin is not a TTY (e.g. CI), headless mode is used automatically. You can also force it with `--ui`:
+
+```sh
+cogent --ui=headless "run the test suite and fix failures"
+```
 
 | Mode | Auto-selected when | Description |
 |------|------|-------------|
-| `tui` | No prompt, interactive TTY | Full-screen Bubble Tea interface |
-| `basic` | Prompt given, interactive TTY | Line-based REPL with ANSI colours |
-| `headless` | Prompt given, piped / CI | Single-shot, auto-approves all tool calls |
-
-```sh
-cogent --ui=tui                                          # force TUI
-cogent --ui=basic "refactor the handler"                 # force basic
-cogent --ui=headless "run the test suite and fix failures"  # CI
-```
+| `tui` | Interactive TTY | Full-screen Bubble Tea interface |
+| `headless` | Piped / CI with a prompt | Single-shot, auto-approves all tool calls |
 
 ## Tools
 
@@ -87,8 +84,6 @@ The bottom bar shows: model name, permission mode, context tokens used, cost (la
 | `/clear` | Clear conversation history |
 | `/quit` | Exit |
 
-The basic REPL supports the same commands plus `/restart` to rebuild and re-exec the binary.
-
 ## AGENTS.md
 
 Cogent supports the [`AGENTS.md` convention](https://github.com/anthropics/AGENTS-md). Any `AGENTS.md` file found in the working directory or a parent directory is appended to the system prompt at startup — giving the agent project-specific context without you having to repeat it each session.
@@ -116,7 +111,7 @@ monorepo/
 Cogent is deliberately minimal. Things it doesn't do (yet):
 
 - **MCP (Model Context Protocol)** — no support for external tool servers
-- **Custom slash commands** — the only commands are `/help`, `/clear`, `/restart`, `/quit`
+- **Custom slash commands** — the only commands are `/help`, `/clear`, `/quit`
 - **Session resume** — conversation history is in-memory only, lost on exit
 - **Streaming** — responses arrive in full, not token-by-token
 - **Multi-model / sub-agents** — single model, single agent loop
