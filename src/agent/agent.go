@@ -19,12 +19,13 @@ Guidelines:
 - Current working directory: %s`
 
 type Agent struct {
-	client   *api.Client
-	registry *tools.Registry
-	messages []api.Message
-	system   string
-	onText   func(string)
-	onTool   func(string, string)
+	client    *api.Client
+	registry  *tools.Registry
+	messages  []api.Message
+	system    string
+	onText    func(string)
+	onTool    func(string, string)
+	onConfirm func(name, summary string) bool
 }
 
 type Option func(*Agent)
@@ -37,13 +38,18 @@ func WithToolCallback(fn func(string, string)) Option {
 	return func(a *Agent) { a.onTool = fn }
 }
 
+func WithConfirmCallback(fn func(name, summary string) bool) Option {
+	return func(a *Agent) { a.onConfirm = fn }
+}
+
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	a := &Agent{
-		client:   client,
-		registry: tools.NewRegistry(),
-		system:   fmt.Sprintf(systemPrompt, cwd),
-		onText:   func(s string) {},
-		onTool:   func(n, s string) {},
+		client:    client,
+		registry:  tools.NewRegistry(cwd),
+		system:    fmt.Sprintf(systemPrompt, cwd),
+		onText:    func(s string) {},
+		onTool:    func(n, s string) {},
+		onConfirm: func(name, summary string) bool { return true },
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -58,6 +64,7 @@ func (a *Agent) Send(userMessage string) error {
 
 func (a *Agent) loop() error {
 	for i := 0; i < 50; i++ {
+		a.trimHistory()
 		resp, err := a.client.SendMessage(a.system, a.messages, a.registry.Definitions())
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
@@ -94,7 +101,11 @@ func (a *Agent) executeTool(block api.ContentBlock) api.ContentBlock {
 	if err != nil {
 		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true)
 	}
-	a.onTool(block.Name, summarizeInput(block.Name, block.Input))
+	summary := summarizeInput(block.Name, block.Input)
+	a.onTool(block.Name, summary)
+	if tool.RequiresConfirmation() && !a.onConfirm(block.Name, summary) {
+		return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true)
+	}
 	result, err := tool.Execute(block.Input)
 	if err != nil {
 		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true)
@@ -131,3 +142,17 @@ func summarizeInput(name string, input map[string]any) string {
 }
 
 func (a *Agent) Reset() { a.messages = nil }
+
+const maxHistory = 100
+
+// trimHistory caps conversation history at maxHistory messages, keeping the
+// first message (initial user prompt) plus the most recent messages.
+func (a *Agent) trimHistory() {
+	if len(a.messages) <= maxHistory {
+		return
+	}
+	keep := make([]api.Message, 0, maxHistory)
+	keep = append(keep, a.messages[0])
+	keep = append(keep, a.messages[len(a.messages)-(maxHistory-1):]...)
+	a.messages = keep
+}

@@ -78,12 +78,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %s\nSet ANTHROPIC_API_KEY.\n", err)
 		os.Exit(1)
 	}
+
+	reader := bufio.NewReader(os.Stdin)
+
 	ag := agent.New(client, cwd,
 		agent.WithTextCallback(func(text string) {
 			fmt.Println(text)
 		}),
 		agent.WithToolCallback(func(name, summary string) {
 			fmt.Printf("%s%s %s%s %s%s\n", dim, yellow, name, reset, dim, summary+reset)
+		}),
+		agent.WithConfirmCallback(func(name, summary string) bool {
+			fmt.Printf("%s%sAllow %s %s? [Y/n]%s ", bold, yellow, name, summary, reset)
+			line, _ := reader.ReadString('\n')
+			line = strings.TrimSpace(strings.ToLower(line))
+			return line == "" || line == "y" || line == "yes"
 		}),
 	)
 	fmt.Printf("%s%s agent %s— busybox coding assistant%s\n", bold, cyan, reset+dim, reset)
@@ -97,14 +106,13 @@ func main() {
 		}
 		return
 	}
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0), 1024*1024)
 	for {
 		fmt.Printf("%s%s> %s", bold, green, reset)
-		if !scanner.Scan() {
+		line, err := reader.ReadString('\n')
+		if err != nil {
 			break
 		}
-		input := strings.TrimSpace(scanner.Text())
+		input := strings.TrimSpace(line)
 		if input == "" {
 			continue
 		}

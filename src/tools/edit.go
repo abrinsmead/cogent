@@ -8,7 +8,11 @@ import (
 	"github.com/anthropics/agent/api"
 )
 
-type EditTool struct{}
+type EditTool struct {
+	AllowedDir string
+}
+
+func (t *EditTool) RequiresConfirmation() bool { return true }
 
 func (t *EditTool) Definition() api.ToolDef {
 	return api.ToolDef{
@@ -44,6 +48,11 @@ func (t *EditTool) Execute(input map[string]any) (string, error) {
 	}
 	if oldStr == newStr {
 		return "", fmt.Errorf("old_string and new_string must differ")
+	}
+	if t.AllowedDir != "" {
+		if err := ValidatePathUnder(filePath, t.AllowedDir); err != nil {
+			return "", err
+		}
 	}
 	info, err := os.Stat(filePath)
 	if err != nil {

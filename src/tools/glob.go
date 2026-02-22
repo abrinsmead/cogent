@@ -13,6 +13,8 @@ import (
 
 type GlobTool struct{}
 
+func (t *GlobTool) RequiresConfirmation() bool { return false }
+
 func (t *GlobTool) Definition() api.ToolDef {
 	return api.ToolDef{
 		Name:        "glob",

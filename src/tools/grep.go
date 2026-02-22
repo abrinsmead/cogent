@@ -13,6 +13,8 @@ import (
 
 type GrepTool struct{}
 
+func (t *GrepTool) RequiresConfirmation() bool { return false }
+
 func (t *GrepTool) Definition() api.ToolDef {
 	return api.ToolDef{
 		Name:        "grep",

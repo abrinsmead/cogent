@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -35,12 +36,32 @@ func NewClient() (*Client, error) {
 	if key == "" {
 		return nil, fmt.Errorf("ANTHROPIC_API_KEY environment variable is required")
 	}
+	baseURL := envOr("ANTHROPIC_BASE_URL", defaultBaseURL)
+	if err := validateBaseURL(baseURL); err != nil {
+		return nil, err
+	}
 	return &Client{
 		apiKey:     key,
-		baseURL:    envOr("ANTHROPIC_BASE_URL", defaultBaseURL),
+		baseURL:    baseURL,
 		model:      envOr("ANTHROPIC_MODEL", defaultModel),
 		httpClient: &http.Client{Timeout: 5 * time.Minute},
 	}, nil
+}
+
+// validateBaseURL requires HTTPS unless the host is localhost, 127.0.0.1, or ::1.
+func validateBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid base URL: %w", err)
+	}
+	host := u.Hostname()
+	if u.Scheme == "https" {
+		return nil
+	}
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return nil
+	}
+	return fmt.Errorf("ANTHROPIC_BASE_URL must use HTTPS (got %s)", raw)
 }
 
 func (c *Client) Model() string {

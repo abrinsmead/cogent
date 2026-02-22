@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 )
 
 type BashTool struct{}
+
+func (t *BashTool) RequiresConfirmation() bool { return true }
 
 func (t *BashTool) Definition() api.ToolDef {
 	return api.ToolDef{
@@ -54,6 +57,12 @@ func runShell(command string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	// Scrub API key from subprocess environment.
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

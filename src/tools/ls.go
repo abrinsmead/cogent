@@ -10,6 +10,8 @@ import (
 
 type LsTool struct{}
 
+func (t *LsTool) RequiresConfirmation() bool { return false }
+
 func (t *LsTool) Definition() api.ToolDef {
 	return api.ToolDef{
 		Name:        "ls",

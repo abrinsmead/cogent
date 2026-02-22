@@ -10,18 +10,19 @@ import (
 type Tool interface {
 	Definition() api.ToolDef
 	Execute(input map[string]any) (string, error)
+	RequiresConfirmation() bool
 }
 
 type Registry struct {
 	tools map[string]Tool
 }
 
-func NewRegistry() *Registry {
+func NewRegistry(cwd string) *Registry {
 	r := &Registry{tools: make(map[string]Tool)}
 	r.Register(&BashTool{})
 	r.Register(&ReadTool{})
-	r.Register(&WriteTool{})
-	r.Register(&EditTool{})
+	r.Register(&WriteTool{AllowedDir: cwd})
+	r.Register(&EditTool{AllowedDir: cwd})
 	r.Register(&GlobTool{})
 	r.Register(&GrepTool{})
 	r.Register(&LsTool{})

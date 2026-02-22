@@ -10,6 +10,8 @@ import (
 
 type ReadTool struct{}
 
+func (t *ReadTool) RequiresConfirmation() bool { return false }
+
 func (t *ReadTool) Definition() api.ToolDef {
 	return api.ToolDef{
 		Name:        "read",

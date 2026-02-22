@@ -8,7 +8,11 @@ import (
 	"github.com/anthropics/agent/api"
 )
 
-type WriteTool struct{}
+type WriteTool struct {
+	AllowedDir string
+}
+
+func (t *WriteTool) RequiresConfirmation() bool { return true }
 
 func (t *WriteTool) Definition() api.ToolDef {
 	return api.ToolDef{
@@ -39,6 +43,11 @@ func (t *WriteTool) Execute(input map[string]any) (string, error) {
 	content, ok := input["content"].(string)
 	if !ok {
 		return "", fmt.Errorf("content is required")
+	}
+	if t.AllowedDir != "" {
+		if err := ValidatePathUnder(filePath, t.AllowedDir); err != nil {
+			return "", err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		return "", fmt.Errorf("create directories: %w", err)
