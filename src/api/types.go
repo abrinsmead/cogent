@@ -108,8 +108,15 @@ type Response struct {
 }
 
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+}
+
+// ContextUsed returns the total tokens consumed by this response (input + output).
+func (u Usage) ContextUsed() int {
+	return u.InputTokens + u.OutputTokens
 }
 
 type ErrorResponse struct {

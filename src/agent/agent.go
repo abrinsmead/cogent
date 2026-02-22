@@ -26,6 +26,7 @@ type Agent struct {
 	onText    func(string)
 	onTool    func(string, string)
 	onConfirm func(name string, input map[string]any) bool
+	onUsage   func(api.Usage)
 }
 
 type Option func(*Agent)
@@ -42,6 +43,10 @@ func WithConfirmCallback(fn func(name string, input map[string]any) bool) Option
 	return func(a *Agent) { a.onConfirm = fn }
 }
 
+func WithUsageCallback(fn func(api.Usage)) Option {
+	return func(a *Agent) { a.onUsage = fn }
+}
+
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	a := &Agent{
 		client:    client,
@@ -50,6 +55,7 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		onText:    func(s string) {},
 		onTool:    func(n, s string) {},
 		onConfirm: func(name string, input map[string]any) bool { return true },
+		onUsage:   func(u api.Usage) {},
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -69,18 +75,31 @@ func (a *Agent) loop() error {
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
 		}
+		a.onUsage(resp.Usage)
 		a.messages = append(a.messages, api.Message{
 			Role:    api.RoleAssistant,
 			Content: resp.Content,
 		})
 		var toolResults []api.ContentBlock
+		denied := false
 		for _, block := range resp.Content {
 			switch block.Type {
 			case "text":
 				a.onText(block.Text)
 			case "tool_use":
-				result := a.executeTool(block)
+				if denied {
+					// A previous tool in this response was denied — skip
+					// remaining tools but still provide a result so the
+					// conversation stays valid for the API.
+					toolResults = append(toolResults, api.ToolResultBlock(
+						block.ID, "Error: tool execution skipped — user denied a previous tool in this response", true))
+					continue
+				}
+				result, wasDenied := a.executeTool(block)
 				toolResults = append(toolResults, result)
+				if wasDenied {
+					denied = true
+				}
 			}
 		}
 		if resp.StopReason == api.StopMaxTokens {
@@ -92,25 +111,31 @@ func (a *Agent) loop() error {
 			return nil
 		}
 		a.messages = append(a.messages, api.ToolResultMessage(toolResults))
+		if denied {
+			// User denied a tool — stop the loop and wait for new instructions.
+			return nil
+		}
 	}
 	return fmt.Errorf("agent loop exceeded 50 iterations")
 }
 
-func (a *Agent) executeTool(block api.ContentBlock) api.ContentBlock {
+// executeTool runs a single tool call. The second return value is true when the
+// user denied the confirmation prompt, signalling the loop to stop.
+func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
 	tool, err := a.registry.Get(block.Name)
 	if err != nil {
-		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true)
+		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true), false
 	}
 	summary := summarizeInput(block.Name, block.Input)
 	a.onTool(block.Name, summary)
 	if tool.RequiresConfirmation() && !a.onConfirm(block.Name, block.Input) {
-		return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true)
+		return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
 	}
 	result, err := tool.Execute(block.Input)
 	if err != nil {
-		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true)
+		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true), false
 	}
-	return api.ToolResultBlock(block.ID, result, false)
+	return api.ToolResultBlock(block.ID, result, false), false
 }
 
 func summarizeInput(name string, input map[string]any) string {

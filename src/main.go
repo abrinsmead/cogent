@@ -1,200 +1,80 @@
 package main
 
 import (
-	"bufio"
+	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
 
-	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
+	"github.com/anthropics/agent/cli"
+	"golang.org/x/term"
 )
-
-const (
-	reset  = "\033[0m"
-	cyan   = "\033[36m"
-	yellow = "\033[33m"
-	green  = "\033[32m"
-	red    = "\033[31m"
-	dim    = "\033[2m"
-	bold   = "\033[1m"
-)
-
-// srcDir returns the directory containing the Go source (where Makefile lives).
-func srcDir() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return ""
-	}
-	return filepath.Dir(exe)
-}
-
-// selfUpdate rebuilds the binary and re-execs into it, preserving cwd and env.
-// On success this function never returns — the process is replaced.
-func selfUpdate() error {
-	src := srcDir()
-	if src == "" {
-		return fmt.Errorf("cannot locate source directory")
-	}
-	makefile := filepath.Join(src, "Makefile")
-	if _, err := os.Stat(makefile); err != nil {
-		return fmt.Errorf("Makefile not found at %s", makefile)
-	}
-
-	fmt.Printf("\n%s%s⟳ rebuilding...%s\n", bold, cyan, reset)
-
-	cmd := exec.Command("make", "-C", src, "build")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build failed: %w", err)
-	}
-
-	binary := filepath.Join(src, "cogent")
-	if _, err := os.Stat(binary); err != nil {
-		return fmt.Errorf("binary not found after build: %w", err)
-	}
-
-	fmt.Printf("%s%s⟳ restarting...%s\n\n", bold, cyan, reset)
-
-	// Replace current process with the new binary.
-	return syscall.Exec(binary, os.Args, os.Environ())
-}
-
-func showDiff(name string, input map[string]any) {
-	str := func(key string) string { s, _ := input[key].(string); return s }
-	switch name {
-	case "edit":
-		old := str("old_string")
-		new := str("new_string")
-		for _, line := range strings.Split(old, "\n") {
-			fmt.Printf("  %s- %s%s\n", red, line, reset)
-		}
-		for _, line := range strings.Split(new, "\n") {
-			fmt.Printf("  %s+ %s%s\n", green, line, reset)
-		}
-	case "write":
-		path := str("file_path")
-		content := str("content")
-		if _, err := os.Stat(path); err != nil {
-			// New file — show all lines as additions.
-			for _, line := range strings.Split(content, "\n") {
-				fmt.Printf("  %s+ %s%s\n", green, line, reset)
-			}
-		} else {
-			// Existing file — unified diff.
-			cmd := exec.Command("diff", "-u", path, "-")
-			cmd.Stdin = strings.NewReader(content)
-			out, _ := cmd.CombinedOutput()
-			for _, line := range strings.Split(string(out), "\n") {
-				switch {
-				case strings.HasPrefix(line, "-"):
-					fmt.Printf("  %s%s%s\n", red, line, reset)
-				case strings.HasPrefix(line, "+"):
-					fmt.Printf("  %s%s%s\n", green, line, reset)
-				case strings.HasPrefix(line, "@@"):
-					fmt.Printf("  %s%s%s\n", cyan, line, reset)
-				default:
-					fmt.Printf("  %s%s%s\n", dim, line, reset)
-				}
-			}
-		}
-	case "bash":
-		fmt.Printf("  %s$ %s%s\n", dim, str("command"), reset)
-	}
-}
 
 func main() {
+	uiMode := flag.String("ui", "", "UI mode: tui, basic, headless (default: auto-detect)")
+	flag.Parse()
+
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot determine working directory: %s\n", err)
-		os.Exit(1)
+		fatal("cannot determine working directory: %s", err)
 	}
 	client, err := api.NewClient()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\nSet ANTHROPIC_API_KEY.\n", err)
-		os.Exit(1)
+		fatal("%s\nSet ANTHROPIC_API_KEY.", err)
 	}
 
-	reader := bufio.NewReader(os.Stdin)
+	prompt := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
-	ag := agent.New(client, cwd,
-		agent.WithTextCallback(func(text string) {
-			fmt.Printf("%s%s%s\n", dim, text, reset)
-		}),
-		agent.WithToolCallback(func(name, summary string) {
-			color := green
-			switch name {
-			case "bash", "write", "edit":
-				color = red
-			}
-			fmt.Printf("%s%s %s%s %s%s\n", dim, color, name, reset, dim, summary+reset)
-		}),
-		agent.WithConfirmCallback(func(name string, input map[string]any) bool {
-			str := func(key string) string { s, _ := input[key].(string); return s }
-			summary := str("file_path")
-			if summary == "" {
-				summary = str("command")
-				if len(summary) > 80 {
-					summary = summary[:80] + "..."
-				}
-			}
-			showDiff(name, input)
-			fmt.Printf("%s%sAllow %s %s? [Y/n]%s ", bold, yellow, name, summary, reset)
-			line, _ := reader.ReadString('\n')
-			line = strings.TrimSpace(strings.ToLower(line))
-			return line == "" || line == "y" || line == "yes"
-		}),
-	)
-	fmt.Printf("%s%s cogent %s— coding agent%s\n", bold, cyan, reset+dim, reset)
-	fmt.Printf("%smodel: %s | cwd: %s%s\n\n", dim, client.Model(), cwd, reset)
-	if len(os.Args) > 1 {
-		prompt := strings.Join(os.Args[1:], " ")
-		fmt.Printf("%s> %s%s\n", green, prompt, reset)
-		if err := ag.Send(prompt); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			os.Exit(1)
-		}
-		return
+	mode := *uiMode
+	if mode == "" {
+		mode = detectMode(prompt)
 	}
-	for {
-		fmt.Printf("%s%s> %s", bold, green, reset)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			break
+
+	var c cli.CLI
+	switch mode {
+	case "tui":
+		c = cli.NewTUI(client, cwd)
+	case "basic":
+		c = cli.NewBasic(client, cwd, prompt)
+	case "headless":
+		if prompt == "" {
+			fatal("headless mode requires a prompt argument")
 		}
-		input := strings.TrimSpace(line)
-		if input == "" {
-			continue
-		}
-		switch input {
-		case "/quit", "/exit", "/q":
-			fmt.Println("Goodbye!")
-			return
-		case "/restart", "/update":
-			if err := selfUpdate(); err != nil {
-				fmt.Fprintf(os.Stderr, "%sRestart failed: %s%s\n", yellow, err, reset)
-			}
-			continue
-		case "/clear":
-			ag.Reset()
-			fmt.Println("Conversation cleared.")
-			continue
-		case "/help":
-			fmt.Println("Commands: /help /clear /restart /quit")
-			fmt.Println("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL")
-			continue
-		}
-		if err := ag.Send(input); err != nil {
-			fmt.Fprintf(os.Stderr, "%sError: %s%s\n", yellow, err, reset)
-		}
-		fmt.Println()
+		c = cli.NewHeadless(client, cwd, prompt)
+	default:
+		fatal("unknown --ui mode: %q (expected tui, basic, or headless)", mode)
 	}
+
+	if err := c.Run(); err != nil {
+		fatal("%s", err)
+	}
+}
+
+// detectMode picks the best UI based on context:
+//   - prompt given + not a TTY → headless (CI/pipes)
+//   - prompt given + TTY       → basic   (single-shot with confirmation)
+//   - no prompt + TTY          → tui     (interactive)
+//   - no prompt + not a TTY    → error
+func detectMode(prompt string) string {
+	tty := term.IsTerminal(int(os.Stdin.Fd()))
+
+	if prompt != "" {
+		if tty {
+			return "basic"
+		}
+		return "headless"
+	}
+
+	if tty {
+		return "tui"
+	}
+
+	fatal("no prompt given and stdin is not a terminal; use --ui=basic or provide a prompt")
+	return "" // unreachable
+}
+
+func fatal(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
+	os.Exit(1)
 }

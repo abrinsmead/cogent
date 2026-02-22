@@ -14,8 +14,54 @@ import (
 const (
 	defaultBaseURL = "https://api.anthropic.com"
 	apiVersion     = "2023-06-01"
-	defaultModel   = "claude-sonnet-4-20250514"
+	defaultModel   = "claude-opus-4-6"
 )
+
+// modelInfo holds context window size and per-token pricing (USD per MTok).
+type modelInfo struct {
+	ContextWindow int     // max tokens
+	InputPrice    float64 // $/MTok for base input
+	CacheHitPrice float64 // $/MTok for cache hits & refreshes
+	OutputPrice   float64 // $/MTok for output
+}
+
+// Known model specs. Prices from https://docs.anthropic.com/en/docs/about-claude/models
+// Prices are in $/MTok as listed on the pricing page.
+var knownModels = map[string]modelInfo{
+	// Opus 4.6
+	"claude-opus-4-6": {ContextWindow: 200000, InputPrice: 5, CacheHitPrice: 0.50, OutputPrice: 25},
+	// Opus 4.5
+	"claude-opus-4-5":          {ContextWindow: 200000, InputPrice: 5, CacheHitPrice: 0.50, OutputPrice: 25},
+	"claude-opus-4-5-20250610": {ContextWindow: 200000, InputPrice: 5, CacheHitPrice: 0.50, OutputPrice: 25},
+	// Opus 4.1
+	"claude-opus-4-1":          {ContextWindow: 200000, InputPrice: 15, CacheHitPrice: 1.50, OutputPrice: 75},
+	"claude-opus-4-1-20250528": {ContextWindow: 200000, InputPrice: 15, CacheHitPrice: 1.50, OutputPrice: 75},
+	// Opus 4
+	"claude-opus-4":          {ContextWindow: 200000, InputPrice: 15, CacheHitPrice: 1.50, OutputPrice: 75},
+	"claude-opus-4-20250514": {ContextWindow: 200000, InputPrice: 15, CacheHitPrice: 1.50, OutputPrice: 75},
+	// Sonnet 4.6
+	"claude-sonnet-4-6": {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	// Sonnet 4.5
+	"claude-sonnet-4-5":          {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	"claude-sonnet-4-5-20250610": {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	// Sonnet 4
+	"claude-sonnet-4":          {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	"claude-sonnet-4-20250514": {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	// Sonnet 3.7 (deprecated)
+	"claude-3-7-sonnet-20250219": {ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15},
+	// Haiku 4.5
+	"claude-haiku-4-5":          {ContextWindow: 200000, InputPrice: 1, CacheHitPrice: 0.10, OutputPrice: 5},
+	"claude-haiku-4-5-20250610": {ContextWindow: 200000, InputPrice: 1, CacheHitPrice: 0.10, OutputPrice: 5},
+	// Haiku 3.5
+	"claude-3-5-haiku-20241022": {ContextWindow: 200000, InputPrice: 0.80, CacheHitPrice: 0.08, OutputPrice: 4},
+	// Opus 3 (deprecated)
+	"claude-3-opus-20240229": {ContextWindow: 200000, InputPrice: 15, CacheHitPrice: 1.50, OutputPrice: 75},
+	// Haiku 3
+	"claude-3-haiku-20240307": {ContextWindow: 200000, InputPrice: 0.25, CacheHitPrice: 0.03, OutputPrice: 1.25},
+}
+
+// fallback for unknown models
+var defaultModelInfo = modelInfo{ContextWindow: 200000, InputPrice: 3, CacheHitPrice: 0.30, OutputPrice: 15}
 
 type Client struct {
 	apiKey     string
@@ -66,6 +112,29 @@ func validateBaseURL(raw string) error {
 
 func (c *Client) Model() string {
 	return c.model
+}
+
+func (c *Client) info() modelInfo {
+	if info, ok := knownModels[c.model]; ok {
+		return info
+	}
+	return defaultModelInfo
+}
+
+// ContextWindow returns the max context window size for the current model.
+func (c *Client) ContextWindow() int {
+	return c.info().ContextWindow
+}
+
+// CostForUsage calculates the USD cost for a given usage.
+// Prices in modelInfo are $/MTok, so we divide token counts by 1e6.
+func (c *Client) CostForUsage(u Usage) float64 {
+	info := c.info()
+	input := float64(u.InputTokens) * info.InputPrice / 1e6
+	output := float64(u.OutputTokens) * info.OutputPrice / 1e6
+	cacheHits := float64(u.CacheReadInputTokens) * info.CacheHitPrice / 1e6
+	cacheCreation := float64(u.CacheCreationInputTokens) * info.InputPrice * 1.25 / 1e6
+	return input + output + cacheHits + cacheCreation
 }
 
 func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef) (*Response, error) {
