@@ -1,6 +1,6 @@
 # Cogent
 
-A lightweight coding agent powered by Claude, written in Go.
+A lightweight coding agent written in Go.
 
 Cogent runs in your terminal and can read, edit, and create files, execute shell commands, and search your codebase — all with confirmation prompts before any destructive action.
 
@@ -86,7 +86,7 @@ The bottom bar shows: model name, permission mode, context tokens used, cost (la
 
 ## AGENTS.md
 
-Cogent supports the [`AGENTS.md` convention](https://github.com/anthropics/AGENTS-md). Any `AGENTS.md` file found in the working directory or a parent directory is appended to the system prompt at startup — giving the agent project-specific context without you having to repeat it each session.
+Cogent supports the [`AGENTS.md` convention](https://agents.md/). Any `AGENTS.md` file found in the working directory or a parent directory is appended to the system prompt at startup — giving the agent project-specific context without you having to repeat it each session.
 
 All files from cwd to the filesystem root are collected and concatenated root-first, so in a monorepo the top-level file provides broad context and deeper files add local specifics:
 
