@@ -12,8 +12,8 @@ import (
 	"github.com/anthropics/agent/tools"
 )
 
-const systemPrompt = `You are an autonomous coding agent running on %s.
-You help users with software engineering tasks: writing code, debugging, exploring codebases, and running commands.
+const systemPrompt = `You are an autonomous agent running on %s.
+You help users accomplish tasks by using the tools available to you.
 
 Guidelines:
 - Read files before modifying them
