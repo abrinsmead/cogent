@@ -313,13 +313,42 @@ func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }
 const maxHistory = 100
 
 // trimHistory caps conversation history at maxHistory messages, keeping the
-// first message (initial user prompt) plus the most recent messages.
+// first message (initial user prompt) plus the most recent messages. The cut
+// point is adjusted forward to avoid splitting a tool_use / tool_result pair,
+// which would cause the API to reject orphaned tool_result blocks.
 func (a *Agent) trimHistory() {
 	if len(a.messages) <= maxHistory {
 		return
 	}
-	keep := make([]api.Message, 0, maxHistory)
+	// Start of the tail we want to keep (index into a.messages).
+	start := len(a.messages) - (maxHistory - 1)
+
+	// Walk forward until we find a message that isn't a tool_result user
+	// message, since those require the preceding assistant tool_use message.
+	for start < len(a.messages) {
+		msg := a.messages[start]
+		if msg.Role != api.RoleUser || !isToolResultMessage(msg) {
+			break
+		}
+		start++
+	}
+
+	keep := make([]api.Message, 0, 1+len(a.messages)-start)
 	keep = append(keep, a.messages[0])
-	keep = append(keep, a.messages[len(a.messages)-(maxHistory-1):]...)
+	keep = append(keep, a.messages[start:]...)
 	a.messages = keep
+}
+
+// isToolResultMessage returns true if every content block in the message is a
+// tool_result. This is the shape produced by ToolResultMessage().
+func isToolResultMessage(msg api.Message) bool {
+	if len(msg.Content) == 0 {
+		return false
+	}
+	for _, block := range msg.Content {
+		if block.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
 }
