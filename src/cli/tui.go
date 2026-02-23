@@ -47,11 +47,14 @@ var (
 			Foreground(lipgloss.Color("8"))
 
 	tuiStatusBar = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("7"))
+			Foreground(lipgloss.Color("8"))
 
 	tuiStatusKey = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("4")).
+			Foreground(lipgloss.Color("5")).
 			Bold(true)
+
+	tuiStatusValue = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("7"))
 
 	tuiStatusGitClean = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("2"))
@@ -754,22 +757,26 @@ func (m tuiModel) renderStatusBar() string {
 
 	// Context: used / total + cache info
 	contextTotal := m.client.ContextWindow()
-	contextStr := tuiStatusBar.Render(fmt.Sprintf("%s/%s",
+	contextStr := tuiStatusValue.Render(fmt.Sprintf("%s/%s",
 		formatTokens(m.contextUsed), formatTokens(contextTotal)))
+	var cacheParts []string
 	if m.cacheRead > 0 {
-		contextStr += tuiGreen.Render(fmt.Sprintf(" ⚡%s read", formatTokens(m.cacheRead)))
+		cacheParts = append(cacheParts, tuiGreen.Render(fmt.Sprintf("⚡%s read", formatTokens(m.cacheRead))))
 	}
 	if m.cacheCreate > 0 {
-		contextStr += tuiYellow.Render(fmt.Sprintf(" +%s write", formatTokens(m.cacheCreate)))
+		cacheParts = append(cacheParts, tuiYellow.Render(fmt.Sprintf("+%s write", formatTokens(m.cacheCreate))))
+	}
+	if len(cacheParts) > 0 {
+		contextStr += tuiStatusBar.Render(" (") + strings.Join(cacheParts, tuiStatusBar.Render(", ")) + tuiStatusBar.Render(")")
 	}
 
 	// Cost
-	lastCostStr := tuiStatusBar.Render(formatCost(m.lastCost))
-	totalCostStr := tuiStatusBar.Render(formatCost(m.totalCost))
+	lastCostStr := tuiStatusValue.Render(formatCost(m.lastCost))
+	totalCostStr := tuiStatusValue.Render(formatCost(m.totalCost))
 
 	// PWD (shortened)
 	pwd := shortenPath(m.cwd)
-	pwdStr := tuiStatusBar.Render(pwd)
+	pwdStr := tuiStatusValue.Render(pwd)
 
 	// Git
 	gitStr := m.renderGitStatus()
