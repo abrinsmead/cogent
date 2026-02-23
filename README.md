@@ -23,10 +23,10 @@ cogent                          # interactive TUI
 cogent "explain this codebase"  # TUI with initial prompt
 ```
 
-When a prompt is given and stdin is not a TTY (e.g. CI), headless mode is used automatically. You can also force it with `--ui`:
+When a prompt is given and stdin is not a TTY (e.g. CI), headless mode is used automatically. You can also force it:
 
 ```sh
-cogent --ui=headless "run the test suite and fix failures"
+cogent --headless "run the test suite and fix failures"
 ```
 
 | Mode | Auto-selected when | Description |
@@ -133,7 +133,29 @@ The mode change takes effect immediately — the very next tool call will use th
 | **Mouse wheel** | Scroll output |
 | **y / n / a** | Approve, deny, or always allow at confirmation prompts |
 
-The input area auto-grows as you type (up to 10 lines). The status bar shows model name, permission mode, context tokens used, cost (last + total), working directory, and git branch with dirty indicator.
+The input area auto-grows as you type (up to 10 lines).
+
+#### Status Bar
+
+The status bar at the bottom of the TUI shows:
+
+```
+ claude-opus-4-6  │  Confirm (shift+tab)  │  ctx 24k/200k ⚡18k read +6k write  │  last $0.12 total $0.45  │  ~/Projects/foo  │  main*
+```
+
+| Field | Description |
+|-------|-------------|
+| **Model** | Active Anthropic model |
+| **Mode** | Current permission mode (Shift+Tab to cycle) |
+| **ctx** | Context window usage: tokens used / model max |
+| **⚡read** | Tokens served from Anthropic's prompt cache (cache hit) — shown in green. These tokens were already cached from a previous request, so they're billed at a reduced rate (e.g. $0.30/MTok instead of $3/MTok for Sonnet). Higher is better — means you're saving money. |
+| **+write** | Tokens written into the prompt cache (cache creation) — shown in yellow. These are new tokens being cached for the first time. There's a one-time surcharge for writing them (1.25× the base input price), but subsequent requests that hit this cache will use the cheaper read rate. |
+| **last** | Cost of the most recent API response |
+| **total** | Cumulative cost for the session |
+| **Path** | Working directory (shortened) |
+| **Branch** | Git branch, with `*` if there are uncommitted changes |
+
+The cache indicators only appear when the respective token counts are non-zero. In a typical session, the first request shows a large **+write** (caching the system prompt and tool definitions), and subsequent requests show a large **⚡read** (reusing that cache), which significantly reduces cost and latency.
 
 | Command | Description |
 |---------|-------------|
