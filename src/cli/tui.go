@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -158,6 +159,18 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
+	// Disable all default keybindings — we handle scrolling manually to avoid
+	// conflicts with the textarea (arrow keys, j/k, etc.).
+	vp.KeyMap = viewport.KeyMap{
+		PageDown:     key.NewBinding(key.WithDisabled()),
+		PageUp:       key.NewBinding(key.WithDisabled()),
+		HalfPageUp:   key.NewBinding(key.WithDisabled()),
+		HalfPageDown: key.NewBinding(key.WithDisabled()),
+		Down:         key.NewBinding(key.WithDisabled()),
+		Up:           key.NewBinding(key.WithDisabled()),
+		Left:         key.NewBinding(key.WithDisabled()),
+		Right:        key.NewBinding(key.WithDisabled()),
+	}
 
 	msgCh := make(chan tea.Msg, 64)
 
@@ -246,18 +259,29 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Scrollback keys: PgUp/PgDn work in any state.
+		// Scrollback keys: PgUp/PgDn/Up/Down work in any state.
 		switch msg.Type {
 		case tea.KeyPgUp:
-			var cmd tea.Cmd
-			m.output, cmd = m.output.Update(msg)
+			m.output.PageUp()
 			m.scrollback = !m.output.AtBottom()
-			return m, cmd
+			return m, nil
 		case tea.KeyPgDown:
-			var cmd tea.Cmd
-			m.output, cmd = m.output.Update(msg)
+			m.output.PageDown()
 			m.scrollback = !m.output.AtBottom()
-			return m, cmd
+			return m, nil
+		case tea.KeyUp:
+			// When not typing (running/confirm), arrow keys scroll the viewport.
+			if m.state != tuiStateInput {
+				m.output.ScrollUp(3)
+				m.scrollback = !m.output.AtBottom()
+				return m, nil
+			}
+		case tea.KeyDown:
+			if m.state != tuiStateInput {
+				m.output.ScrollDown(3)
+				m.scrollback = !m.output.AtBottom()
+				return m, nil
+			}
 		case tea.KeyShiftTab:
 			// Cycle permission mode — works in input and running states so you
 			// can switch e.g. from YOLO back to Confirm mid-execution.
@@ -408,6 +432,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "/help":
 			m.appendLine(tuiDim.Render("Commands: /help /clear /quit"))
 			m.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
+			m.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running), mouse wheel"))
 			m.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
 			m.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
 			m.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
