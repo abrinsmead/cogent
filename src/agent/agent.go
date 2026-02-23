@@ -12,7 +12,7 @@ import (
 	"github.com/anthropics/agent/tools"
 )
 
-const systemPrompt = `You are an autonomous coding agent running on macOS.
+const systemPrompt = `You are an autonomous coding agent running on %s.
 You help users with software engineering tasks: writing code, debugging, exploring codebases, and running commands.
 
 Guidelines:
@@ -106,7 +106,10 @@ func WithPermissionMode(m PermissionMode) Option {
 }
 
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
-	system := fmt.Sprintf(systemPrompt, cwd)
+	system := fmt.Sprintf(systemPrompt, envDescription(), cwd)
+	if guide := shellGuidance(); guide != "" {
+		system += "\n" + guide
+	}
 	if extra := loadAgentsMD(cwd); extra != "" {
 		system += "\n\n" + extra
 	}
