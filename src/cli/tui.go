@@ -90,7 +90,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -294,6 +294,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return m.handleInput(msg)
 		}
+
+	case tea.MouseMsg:
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			var cmd tea.Cmd
+			m.output, cmd = m.output.Update(msg)
+			m.scrollback = !m.output.AtBottom()
+			return m, cmd
+		}
+		// Ignore all other mouse events so they don't reach the textarea
+		// (which would insert control characters into the prompt).
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -713,7 +724,10 @@ func (m tuiModel) renderStatusBar() string {
 	contextStr := tuiStatusBar.Render(fmt.Sprintf("%s/%s",
 		formatTokens(m.contextUsed), formatTokens(contextTotal)))
 	if m.cacheRead > 0 {
-		contextStr += tuiGreen.Render(fmt.Sprintf(" ⚡%s cached", formatTokens(m.cacheRead)))
+		contextStr += tuiGreen.Render(fmt.Sprintf(" ⚡%s read", formatTokens(m.cacheRead)))
+	}
+	if m.cacheCreate > 0 {
+		contextStr += tuiYellow.Render(fmt.Sprintf(" +%s write", formatTokens(m.cacheCreate)))
 	}
 
 	// Cost
