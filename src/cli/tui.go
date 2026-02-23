@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
 	"github.com/anthropics/agent/agent"
@@ -94,7 +95,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -326,22 +327,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInput(msg)
 		}
 
-	case tea.MouseMsg:
-		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-			var cmd tea.Cmd
-			m.output, cmd = m.output.Update(msg)
-			m.scrollback = !m.output.AtBottom()
-			return m, cmd
-		}
-		// Ignore all other mouse events so they don't reach the textarea
-		// (which would insert control characters into the prompt).
-		return m, nil
-
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resize()             // update widths first
 		m.recalcInputHeight()  // then recalc with new wrap width
+		m.refreshContent()     // re-wrap lines to new width
 
 	case tuiInitialPromptMsg:
 		prompt := m.initialPrompt
@@ -635,15 +626,14 @@ func (m tuiModel) View() string {
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
 
 func (m *tuiModel) resize() {
-	// Layout (lines below the viewport):
-	//   1  newline after viewport
-	//   1  top border    ┌───┐
+	// Layout (rows below the viewport):
+	//   1  top border    ╭───╮
 	//   N  input lines   │...│  (dynamic, 1..maxInputHeight)
 	//   1  mid border    ├───┤
 	//   1  status line   │...│
-	//   1  bottom border └───┘
-	//   = 5 + N
-	chrome := 5 + m.inputHeight
+	//   1  bottom border ╰───╯
+	//   = 4 + N
+	chrome := 4 + m.inputHeight
 	m.output.Width = m.width
 	vpHeight := m.height - chrome
 	if vpHeight < 1 {
@@ -700,7 +690,21 @@ func (m *tuiModel) inputVisualLines() int {
 
 func (m *tuiModel) appendLine(text string) {
 	m.lines = append(m.lines, text)
-	m.output.SetContent(strings.Join(m.lines, "\n"))
+	m.refreshContent()
+}
+
+// refreshContent re-wraps all lines to the current viewport width and updates
+// the viewport content.
+func (m *tuiModel) refreshContent() {
+	w := m.output.Width
+	if w < 1 {
+		w = 80
+	}
+	var wrapped []string
+	for _, line := range m.lines {
+		wrapped = append(wrapped, ansi.Wrap(line, w, ""))
+	}
+	m.output.SetContent(strings.Join(wrapped, "\n"))
 	if !m.scrollback {
 		m.output.GotoBottom()
 	}
