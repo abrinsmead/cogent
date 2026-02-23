@@ -1,0 +1,276 @@
+#!/bin/bash
+# @tool linear_create_issue
+# @description Create a new Linear issue. Returns the created issue's identifier, title, status, and URL.
+# @param title string required "Title of the issue"
+# @param description string "Markdown description of the issue"
+# @param status string "Status name, e.g. 'Todo', 'In Progress', 'Backlog' (default: team default)"
+# @param priority string "Priority level: 'None', 'Urgent', 'High', 'Medium', 'Low'"
+# @param assignee string "Assignee name or display name (looked up by fuzzy match)"
+# @param team string "Team key, e.g. 'ABR', 'ENG'. If omitted, uses the first team found."
+# @env LINEAR_API_KEY required "Linear API key (personal or OAuth token)"
+# @confirm
+
+set -euo pipefail
+
+INPUT=$(cat)
+
+TITLE=$(echo "$INPUT" | sed -n 's/.*"title"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+DESCRIPTION=$(echo "$INPUT" | sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+STATUS=$(echo "$INPUT" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+PRIORITY=$(echo "$INPUT" | sed -n 's/.*"priority"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+ASSIGNEE=$(echo "$INPUT" | sed -n 's/.*"assignee"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+TEAM=$(echo "$INPUT" | sed -n 's/.*"team"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+if [ -z "$LINEAR_API_KEY" ]; then
+  echo "Error: LINEAR_API_KEY environment variable is not set." >&2
+  exit 1
+fi
+
+if [ -z "$TITLE" ]; then
+  echo "Error: title is required." >&2
+  exit 1
+fi
+
+# --- Step 1: Resolve team ID ---
+
+if [ -n "$TEAM" ]; then
+  TEAM_UPPER=$(echo "$TEAM" | tr '[:lower:]' '[:upper:]')
+  TEAM_QUERY="{\"query\":\"{ teams { nodes { id key name } } }\"}"
+
+  TEAM_RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $LINEAR_API_KEY" \
+    -d "$TEAM_QUERY")
+
+  if [ $? -ne 0 ] || [ -z "$TEAM_RESPONSE" ]; then
+    echo "Error: failed to fetch teams from Linear API." >&2
+    exit 1
+  fi
+
+  TEAM_ID=$(echo "$TEAM_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+target = '${TEAM_UPPER}'
+for t in d['data']['teams']['nodes']:
+    if t['key'].upper() == target:
+        print(t['id'])
+        sys.exit(0)
+keys = [t['key'] for t in d['data']['teams']['nodes']]
+print('Error: team \'${TEAM}\' not found. Available: ' + ', '.join(keys), file=sys.stderr)
+sys.exit(1)
+" 2>&1)
+
+  if [ $? -ne 0 ]; then
+    echo "$TEAM_ID" >&2
+    exit 1
+  fi
+else
+  # No team specified — use the first team
+  TEAM_QUERY='{"query":"{ teams(first: 1) { nodes { id key } } }"}'
+
+  TEAM_RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $LINEAR_API_KEY" \
+    -d "$TEAM_QUERY")
+
+  if [ $? -ne 0 ] || [ -z "$TEAM_RESPONSE" ]; then
+    echo "Error: failed to fetch teams from Linear API." >&2
+    exit 1
+  fi
+
+  TEAM_ID=$(echo "$TEAM_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+nodes = d['data']['teams']['nodes']
+if not nodes:
+    print('Error: no teams found in workspace.', file=sys.stderr)
+    sys.exit(1)
+print(nodes[0]['id'])
+" 2>&1)
+
+  if [ $? -ne 0 ]; then
+    echo "$TEAM_ID" >&2
+    exit 1
+  fi
+fi
+
+# --- Step 2: Resolve status to state ID (optional) ---
+
+STATE_ID=""
+if [ -n "$STATUS" ]; then
+  STATES_QUERY="{\"query\":\"{ team(id: \\\"$TEAM_ID\\\") { states { nodes { id name } } } }\"}"
+
+  STATES_RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $LINEAR_API_KEY" \
+    -d "$STATES_QUERY")
+
+  if [ $? -ne 0 ] || [ -z "$STATES_RESPONSE" ]; then
+    echo "Error: failed to fetch workflow states from Linear API." >&2
+    exit 1
+  fi
+
+  STATE_ID=$(echo "$STATES_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+target = '${STATUS}'.lower()
+for s in d['data']['team']['states']['nodes']:
+    if s['name'].lower() == target:
+        print(s['id'])
+        sys.exit(0)
+names = [s['name'] for s in d['data']['team']['states']['nodes']]
+print('Error: status \'${STATUS}\' not found. Available: ' + ', '.join(names), file=sys.stderr)
+sys.exit(1)
+" 2>&1)
+
+  if [ $? -ne 0 ]; then
+    echo "$STATE_ID" >&2
+    exit 1
+  fi
+fi
+
+# --- Step 3: Resolve assignee to user ID (optional) ---
+
+USER_ID=""
+if [ -n "$ASSIGNEE" ]; then
+  USERS_QUERY="{\"query\":\"{ users { nodes { id name displayName } } }\"}"
+
+  USERS_RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $LINEAR_API_KEY" \
+    -d "$USERS_QUERY")
+
+  if [ $? -ne 0 ] || [ -z "$USERS_RESPONSE" ]; then
+    echo "Error: failed to fetch users from Linear API." >&2
+    exit 1
+  fi
+
+  USER_ID=$(echo "$USERS_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+target = '${ASSIGNEE}'.lower()
+for u in d['data']['users']['nodes']:
+    if target in u['name'].lower() or target in u.get('displayName','').lower():
+        print(u['id'])
+        sys.exit(0)
+names = [u['name'] for u in d['data']['users']['nodes']]
+print('Error: no user found matching \'${ASSIGNEE}\'. Available: ' + ', '.join(names), file=sys.stderr)
+sys.exit(1)
+" 2>&1)
+
+  if [ $? -ne 0 ]; then
+    echo "$USER_ID" >&2
+    exit 1
+  fi
+fi
+
+# --- Step 4: Map priority to integer (optional) ---
+
+PRIORITY_NUM=""
+if [ -n "$PRIORITY" ]; then
+  PRIORITY_LOWER=$(echo "$PRIORITY" | tr '[:upper:]' '[:lower:]')
+  case "$PRIORITY_LOWER" in
+    none|no\ priority) PRIORITY_NUM="0" ;;
+    urgent)            PRIORITY_NUM="1" ;;
+    high)              PRIORITY_NUM="2" ;;
+    medium)            PRIORITY_NUM="3" ;;
+    low)               PRIORITY_NUM="4" ;;
+    *)
+      echo "Error: invalid priority '$PRIORITY'. Must be one of: None, Urgent, High, Medium, Low." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# --- Step 5: Build mutation input fields ---
+
+INPUT_FIELDS="teamId: \\\"$TEAM_ID\\\","
+
+# Escape quotes in title
+ESCAPED_TITLE=$(echo "$TITLE" | sed 's/\\/\\\\/g; s/"/\\"/g')
+INPUT_FIELDS="${INPUT_FIELDS} title: \\\"$ESCAPED_TITLE\\\","
+
+if [ -n "$DESCRIPTION" ]; then
+  ESCAPED_DESC=$(echo "$DESCRIPTION" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  INPUT_FIELDS="${INPUT_FIELDS} description: \\\"$ESCAPED_DESC\\\","
+fi
+
+if [ -n "$STATE_ID" ]; then
+  INPUT_FIELDS="${INPUT_FIELDS} stateId: \\\"$STATE_ID\\\","
+fi
+
+if [ -n "$PRIORITY_NUM" ]; then
+  INPUT_FIELDS="${INPUT_FIELDS} priority: $PRIORITY_NUM,"
+fi
+
+if [ -n "$USER_ID" ]; then
+  INPUT_FIELDS="${INPUT_FIELDS} assigneeId: \\\"$USER_ID\\\","
+fi
+
+# Remove trailing comma
+INPUT_FIELDS=$(echo "$INPUT_FIELDS" | sed 's/,$//')
+
+# --- Step 6: Execute the mutation ---
+
+MUTATION="{\"query\":\"mutation { issueCreate(input: {$INPUT_FIELDS }) { success issue { identifier title state { name } priorityLabel assignee { name } url } } }\"}"
+
+MUTATION_RESPONSE=$(curl -sf -X POST "https://api.linear.app/graphql" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -d "$MUTATION")
+
+if [ $? -ne 0 ] || [ -z "$MUTATION_RESPONSE" ]; then
+  echo "Error: failed to create issue via Linear API." >&2
+  exit 1
+fi
+
+# --- Step 7: Format output ---
+
+echo "$MUTATION_RESPONSE" | python3 -c "
+import sys, json
+
+d = json.load(sys.stdin)
+
+if 'errors' in d:
+    for e in d['errors']:
+        print('Error:', e.get('message','unknown'), file=sys.stderr)
+    sys.exit(1)
+
+result = d.get('data', {}).get('issueCreate', {})
+if not result.get('success'):
+    print('Error: issue creation was not successful.', file=sys.stderr)
+    sys.exit(1)
+
+issue = result.get('issue', {})
+identifier = issue.get('identifier', '?')
+title = issue.get('title', 'Untitled')
+state = issue.get('state', {}).get('name', 'Unknown')
+priority = issue.get('priorityLabel', 'None')
+assignee = issue.get('assignee', {})
+assignee_name = assignee.get('name', 'Unassigned') if assignee else 'Unassigned'
+url = issue.get('url', '')
+
+print(f'Created [{identifier}] successfully.')
+print()
+print(f'  Title:     {title}')
+print(f'  Status:    {state}')
+print(f'  Priority:  {priority}')
+print(f'  Assignee:  {assignee_name}')
+print(f'  {url}')
+"
