@@ -129,10 +129,14 @@ func (c *Client) ContextWindow() int {
 
 // CostForUsage calculates the USD cost for a given usage.
 // Prices in modelInfo are $/MTok, so we divide token counts by 1e6.
+// When compaction iterations are present, uses the total across all iterations
+// for accurate billing (top-level fields exclude compaction iterations).
 func (c *Client) CostForUsage(u Usage) float64 {
 	info := c.info()
-	input := float64(u.InputTokens) * info.InputPrice / 1e6
-	output := float64(u.OutputTokens) * info.OutputPrice / 1e6
+	inputToks := u.TotalInputTokens()
+	outputToks := u.TotalOutputTokens()
+	input := float64(inputToks) * info.InputPrice / 1e6
+	output := float64(outputToks) * info.OutputPrice / 1e6
 	cacheHits := float64(u.CacheReadInputTokens) * info.CacheHitPrice / 1e6
 	cacheCreation := float64(u.CacheCreationInputTokens) * info.InputPrice * 1.25 / 1e6
 	return input + output + cacheHits + cacheCreation
@@ -152,6 +156,12 @@ func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []M
 		}}
 	}
 
+	// Compaction trigger at 80% of context window (min 50k per API requirement).
+	trigger := c.ContextWindow() * 80 / 100
+	if trigger < 50000 {
+		trigger = 50000
+	}
+
 	req := Request{
 		Model:        c.model,
 		MaxTokens:    16384,
@@ -159,6 +169,15 @@ func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []M
 		System:       sysBlocks,
 		Messages:     messages,
 		Tools:        tools,
+		ContextManagement: &ContextManagement{
+			Edits: []ContextEdit{{
+				Type: "compact_20260112",
+				Trigger: &CompactTrigger{
+					Type:  "input_tokens",
+					Value: trigger,
+				},
+			}},
+		},
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -176,6 +195,7 @@ func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []M
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("X-API-Key", c.apiKey)
 		httpReq.Header.Set("Anthropic-Version", apiVersion)
+		httpReq.Header.Set("Anthropic-Beta", "compact-2026-01-12")
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			return nil, fmt.Errorf("send request: %w", err)

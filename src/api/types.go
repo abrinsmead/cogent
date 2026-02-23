@@ -15,8 +15,9 @@ const (
 type StopReason string
 
 const (
-	StopToolUse   StopReason = "tool_use"
-	StopMaxTokens StopReason = "max_tokens"
+	StopToolUse    StopReason = "tool_use"
+	StopMaxTokens  StopReason = "max_tokens"
+	StopCompaction StopReason = "compaction"
 )
 
 type ContentBlock struct {
@@ -62,6 +63,11 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 			ToolUseID string `json:"tool_use_id"`
 			Content   string `json:"content"`
 		}{cb.Type, cb.ToolUseID, cb.Content})
+	case "compaction":
+		return json.Marshal(struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+		}{cb.Type, cb.Content})
 	default:
 		return json.Marshal(struct {
 			Type string `json:"type"`
@@ -196,12 +202,30 @@ type SystemBlock struct {
 }
 
 type Request struct {
-	Model        string        `json:"model"`
-	MaxTokens    int           `json:"max_tokens"`
-	CacheControl *CacheControl `json:"cache_control,omitempty"`
-	System       []SystemBlock `json:"system,omitempty"`
-	Messages     []Message     `json:"messages"`
-	Tools        []ToolDef     `json:"tools,omitempty"`
+	Model             string             `json:"model"`
+	MaxTokens         int                `json:"max_tokens"`
+	CacheControl      *CacheControl      `json:"cache_control,omitempty"`
+	System            []SystemBlock      `json:"system,omitempty"`
+	Messages          []Message          `json:"messages"`
+	Tools             []ToolDef          `json:"tools,omitempty"`
+	ContextManagement *ContextManagement `json:"context_management,omitempty"`
+}
+
+// ContextManagement configures server-side context management strategies.
+type ContextManagement struct {
+	Edits []ContextEdit `json:"edits"`
+}
+
+// ContextEdit represents a single context management strategy.
+type ContextEdit struct {
+	Type    string         `json:"type"`
+	Trigger *CompactTrigger `json:"trigger,omitempty"`
+}
+
+// CompactTrigger configures when compaction is triggered.
+type CompactTrigger struct {
+	Type  string `json:"type"`
+	Value int    `json:"value"`
 }
 
 type Response struct {
@@ -214,17 +238,60 @@ type Response struct {
 }
 
 type Usage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int              `json:"input_tokens"`
+	OutputTokens             int              `json:"output_tokens"`
+	CacheCreationInputTokens int              `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int              `json:"cache_read_input_tokens,omitempty"`
+	Iterations               []UsageIteration `json:"iterations,omitempty"`
+}
+
+// UsageIteration represents token usage for a single iteration within a request.
+// When compaction occurs, there will be a "compaction" iteration followed by a
+// "message" iteration. The top-level Usage fields only reflect non-compaction
+// iterations, so Iterations must be used for accurate total cost tracking.
+type UsageIteration struct {
+	Type         string `json:"type"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
 }
 
 // ContextUsed returns the total tokens consumed by this response.
 // Cached tokens (both read and creation) still occupy the context window,
 // so they must be included alongside regular input and output tokens.
+// When compaction iterations are present, uses the last iteration's input
+// tokens as the effective context size (post-compaction).
 func (u Usage) ContextUsed() int {
+	if len(u.Iterations) > 0 {
+		last := u.Iterations[len(u.Iterations)-1]
+		return last.InputTokens + last.OutputTokens
+	}
 	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
+}
+
+// TotalInputTokens returns the sum of input tokens across all iterations.
+// When compaction is active, the top-level InputTokens only reflects non-compaction
+// iterations, so this method aggregates across all iterations for accurate billing.
+func (u Usage) TotalInputTokens() int {
+	if len(u.Iterations) == 0 {
+		return u.InputTokens
+	}
+	total := 0
+	for _, it := range u.Iterations {
+		total += it.InputTokens
+	}
+	return total
+}
+
+// TotalOutputTokens returns the sum of output tokens across all iterations.
+func (u Usage) TotalOutputTokens() int {
+	if len(u.Iterations) == 0 {
+		return u.OutputTokens
+	}
+	total := 0
+	for _, it := range u.Iterations {
+		total += it.OutputTokens
+	}
+	return total
 }
 
 type ErrorResponse struct {

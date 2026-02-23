@@ -103,6 +103,7 @@ type tuiDoneMsg struct{ err error }
 type tuiShellDoneMsg struct{ err error }
 type tuiUsageMsg struct{ usage api.Usage }
 type tuiInitialPromptMsg struct{}
+type tuiCompactionMsg struct{}
 type tuiConfirmMsg struct {
 	name  string
 	input map[string]any
@@ -228,6 +229,9 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		}),
 		agent.WithUsageCallback(func(usage api.Usage) {
 			msgCh <- tuiUsageMsg{usage: usage}
+		}),
+		agent.WithCompactionCallback(func() {
+			msgCh <- tuiCompactionMsg{}
 		}),
 	)
 
@@ -355,6 +359,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cost := m.client.CostForUsage(msg.usage)
 		m.lastCost = cost
 		m.totalCost += cost
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiCompactionMsg:
+		m.appendLine(tuiDim.Render("  ⚡ context compacted"))
 		cmds = append(cmds, m.waitForMsg())
 
 	case tuiConfirmMsg:

@@ -77,6 +77,7 @@ type Agent struct {
 	onToolResult func(name string, result string, isError bool)
 	onConfirm    func(name string, input map[string]any) ConfirmResult
 	onUsage      func(api.Usage)
+	onCompaction func() // called when server-side compaction occurs
 }
 
 type Option func(*Agent)
@@ -99,6 +100,10 @@ func WithConfirmCallback(fn func(name string, input map[string]any) ConfirmResul
 
 func WithUsageCallback(fn func(api.Usage)) Option {
 	return func(a *Agent) { a.onUsage = fn }
+}
+
+func WithCompactionCallback(fn func()) Option {
+	return func(a *Agent) { a.onCompaction = fn }
 }
 
 func WithPermissionMode(m PermissionMode) Option {
@@ -128,6 +133,7 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		onToolResult: func(name, result string, isError bool) {},
 		onConfirm:    func(name string, input map[string]any) ConfirmResult { return ConfirmAllow },
 		onUsage:      func(u api.Usage) {},
+		onCompaction: func() {},
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -185,7 +191,6 @@ func (a *Agent) loop(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		a.trimHistory()
 		system := a.system
 		if a.GetPermissionMode() == ModePlan {
 			system += "\n\nIMPORTANT: You are in planning mode. You may only use read-only tools (read, glob, grep, ls). Do NOT use bash, write, or edit. Instead, describe what changes you would make and why."
@@ -199,12 +204,28 @@ func (a *Agent) loop(ctx context.Context) error {
 			Role:    api.RoleAssistant,
 			Content: resp.Content,
 		})
+
+		// Check for compaction blocks in the response
+		compacted := false
+		for _, block := range resp.Content {
+			if block.Type == "compaction" {
+				compacted = true
+				break
+			}
+		}
+		if compacted {
+			a.onCompaction()
+		}
+
 		var toolResults []api.ContentBlock
 		denied := false
 		for _, block := range resp.Content {
 			switch block.Type {
 			case "text":
 				a.onText(block.Text)
+			case "compaction":
+				// Compaction blocks are kept in the message history —
+				// the API will drop all content before them automatically.
 			case "tool_use":
 				if denied {
 					// A previous tool in this response was denied — skip
@@ -220,6 +241,11 @@ func (a *Agent) loop(ctx context.Context) error {
 					denied = true
 				}
 			}
+		}
+		if resp.StopReason == api.StopCompaction {
+			// Compaction paused the response — continue to let the model
+			// resume with the compacted context.
+			continue
 		}
 		if resp.StopReason == api.StopMaxTokens {
 			// Response was truncated — ask the model to continue
@@ -313,46 +339,3 @@ func (a *Agent) GetPermissionMode() PermissionMode  { return PermissionMode(a.pe
 
 // AllowedTools returns the set of tool names that have been "always allowed" for this session.
 func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }
-
-const maxHistory = 100
-
-// trimHistory caps conversation history at maxHistory messages, keeping the
-// first message (initial user prompt) plus the most recent messages. The cut
-// point is adjusted forward to avoid splitting a tool_use / tool_result pair,
-// which would cause the API to reject orphaned tool_result blocks.
-func (a *Agent) trimHistory() {
-	if len(a.messages) <= maxHistory {
-		return
-	}
-	// Start of the tail we want to keep (index into a.messages).
-	start := len(a.messages) - (maxHistory - 1)
-
-	// Walk forward until we find a message that isn't a tool_result user
-	// message, since those require the preceding assistant tool_use message.
-	for start < len(a.messages) {
-		msg := a.messages[start]
-		if msg.Role != api.RoleUser || !isToolResultMessage(msg) {
-			break
-		}
-		start++
-	}
-
-	keep := make([]api.Message, 0, 1+len(a.messages)-start)
-	keep = append(keep, a.messages[0])
-	keep = append(keep, a.messages[start:]...)
-	a.messages = keep
-}
-
-// isToolResultMessage returns true if every content block in the message is a
-// tool_result. This is the shape produced by ToolResultMessage().
-func isToolResultMessage(msg api.Message) bool {
-	if len(msg.Content) == 0 {
-		return false
-	}
-	for _, block := range msg.Content {
-		if block.Type != "tool_result" {
-			return false
-		}
-	}
-	return true
-}
