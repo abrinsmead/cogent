@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/anthropics/agent/api"
 	"github.com/anthropics/agent/tools"
@@ -69,7 +70,7 @@ type Agent struct {
 	registry     *tools.Registry
 	messages     []api.Message
 	system       string
-	permMode     PermissionMode
+	permMode     atomic.Int32    // stores PermissionMode; atomic for cross-goroutine access
 	allowedTools map[string]bool // tools the user has "always allowed" for this session
 	onText       func(string)
 	onTool       func(string, string)
@@ -101,7 +102,7 @@ func WithUsageCallback(fn func(api.Usage)) Option {
 }
 
 func WithPermissionMode(m PermissionMode) Option {
-	return func(a *Agent) { a.permMode = m }
+	return func(a *Agent) { a.permMode.Store(int32(m)) }
 }
 
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
@@ -183,7 +184,7 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 		a.trimHistory()
 		system := a.system
-		if a.permMode == ModePlan {
+		if a.GetPermissionMode() == ModePlan {
 			system += "\n\nIMPORTANT: You are in planning mode. You may only use read-only tools (read, glob, grep, ls). Do NOT use bash, write, or edit. Instead, describe what changes you would make and why."
 		}
 		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, a.registry.Definitions())
@@ -245,7 +246,7 @@ func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
 	a.onTool(block.Name, summary)
 
 	if tool.RequiresConfirmation() && !a.allowedTools[block.Name] {
-		switch a.permMode {
+		switch a.GetPermissionMode() {
 		case ModePlan, ModeTerminal:
 			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only)", true), true
 		case ModeYOLO:
@@ -304,8 +305,8 @@ func (a *Agent) Reset() {
 	a.allowedTools = make(map[string]bool)
 }
 
-func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode = m }
-func (a *Agent) GetPermissionMode() PermissionMode  { return a.permMode }
+func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode.Store(int32(m)) }
+func (a *Agent) GetPermissionMode() PermissionMode  { return PermissionMode(a.permMode.Load()) }
 
 // AllowedTools returns the set of tool names that have been "always allowed" for this session.
 func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }

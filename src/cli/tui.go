@@ -259,8 +259,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollback = !m.output.AtBottom()
 			return m, cmd
 		case tea.KeyShiftTab:
-			// Cycle permission mode: Confirm → Plan → YOLO → Terminal → Confirm
-			if m.state == tuiStateInput {
+			// Cycle permission mode — works in input and running states so you
+			// can switch e.g. from YOLO back to Confirm mid-execution.
+			if m.state == tuiStateInput || m.state == tuiStateRunning {
 				newMode := agent.CyclePermissionMode(m.agent.GetPermissionMode())
 				m.agent.SetPermissionMode(newMode)
 				var style lipgloss.Style

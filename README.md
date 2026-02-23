@@ -111,7 +111,7 @@ This project includes several custom tools in `.cogent/tools/`:
 
 ### Permission Modes
 
-Cycle with **Shift+Tab** in the TUI:
+Cycle with **Shift+Tab** in the TUI — works both when idle **and while the agent is running**, so you can switch from YOLO back to Confirm mid-execution if the agent starts doing something you want to review:
 
 | Mode | Behaviour |
 |------|-----------|
@@ -120,12 +120,14 @@ Cycle with **Shift+Tab** in the TUI:
 | **YOLO** | Auto-approves every tool call |
 | **Terminal** | Pauses the agent — your input runs as shell commands |
 
+The mode change takes effect immediately — the very next tool call will use the new mode.
+
 ### TUI
 
 | Key | Action |
 |-----|--------|
 | **Enter** | Send message / approve tool call |
-| **Shift+Tab** | Cycle permission mode |
+| **Shift+Tab** | Cycle permission mode (works while idle or running) |
 | **Ctrl+C** | Interrupt running agent, or quit when idle |
 | **PgUp / PgDn** | Scroll output |
 | **Mouse wheel** | Scroll output |
