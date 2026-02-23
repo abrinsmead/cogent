@@ -143,32 +143,22 @@ func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef)
 }
 
 func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []ToolDef) (*Response, error) {
-	// Build system prompt as a content block array with cache control on the
-	// last block so the system prompt is cached across requests.
+	// Build system prompt as a content block array.
 	var sysBlocks []SystemBlock
 	if system != "" {
 		sysBlocks = []SystemBlock{{
-			Type:         "text",
-			Text:         system,
-			CacheControl: &CacheControl{Type: "ephemeral"},
+			Type: "text",
+			Text: system,
 		}}
 	}
 
-	// Clone tools and mark the last one with cache_control so the full tool
-	// schema is included in the cached prefix.
-	cachedTools := make([]ToolDef, len(tools))
-	copy(cachedTools, tools)
-	if len(cachedTools) > 0 {
-		last := &cachedTools[len(cachedTools)-1]
-		last.CacheControl = &CacheControl{Type: "ephemeral"}
-	}
-
 	req := Request{
-		Model:     c.model,
-		MaxTokens: 16384,
-		System:    sysBlocks,
-		Messages:  messages,
-		Tools:     cachedTools,
+		Model:        c.model,
+		MaxTokens:    16384,
+		CacheControl: &CacheControl{Type: "ephemeral"},
+		System:       sysBlocks,
+		Messages:     messages,
+		Tools:        tools,
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

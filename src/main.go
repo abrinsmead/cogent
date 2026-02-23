@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	uiMode := flag.String("ui", "", "UI mode: tui, headless (default: auto-detect)")
+	headless := flag.Bool("headless", false, "Run in headless mode (no TUI, auto-approve, requires a prompt)")
 	flag.Parse()
 
 	cwd, err := os.Getwd()
@@ -26,22 +26,20 @@ func main() {
 
 	prompt := strings.TrimSpace(strings.Join(flag.Args(), " "))
 
-	mode := *uiMode
-	if mode == "" {
-		mode = detectMode(prompt)
+	if !*headless && !detectHeadless(prompt) {
+		// TUI mode
+	} else {
+		*headless = true
 	}
 
 	var c cli.CLI
-	switch mode {
-	case "tui":
-		c = cli.NewTUI(client, cwd, prompt)
-	case "headless":
+	if *headless {
 		if prompt == "" {
 			fatal("headless mode requires a prompt argument")
 		}
 		c = cli.NewHeadless(client, cwd, prompt)
-	default:
-		fatal("unknown --ui mode: %q (expected tui or headless)", mode)
+	} else {
+		c = cli.NewTUI(client, cwd, prompt)
 	}
 
 	if err := c.Run(); err != nil {
@@ -49,27 +47,19 @@ func main() {
 	}
 }
 
-// detectMode picks the best UI based on context:
-//   - prompt given + not a TTY → headless (CI/pipes)
-//   - prompt given + TTY       → tui     (interactive, prompt sent as first message)
-//   - no prompt + TTY          → tui     (interactive)
-//   - no prompt + not a TTY    → error
-func detectMode(prompt string) string {
+// detectHeadless returns true when the environment suggests headless mode:
+// a prompt is provided and stdin is not a TTY (CI/pipes). If no prompt is
+// given and stdin is not a TTY either, it exits with an error.
+func detectHeadless(prompt string) bool {
 	tty := term.IsTerminal(int(os.Stdin.Fd()))
-
-	if prompt != "" {
-		if tty {
-			return "tui"
-		}
-		return "headless"
-	}
-
 	if tty {
-		return "tui"
+		return false
 	}
-
-	fatal("no prompt given and stdin is not a terminal; provide a prompt")
-	return "" // unreachable
+	if prompt != "" {
+		return true
+	}
+	fatal("no prompt given and stdin is not a terminal; provide a prompt or use --headless")
+	return false // unreachable
 }
 
 func fatal(format string, args ...any) {
