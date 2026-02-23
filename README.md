@@ -48,7 +48,7 @@ cogent --ui=headless "run the test suite and fix failures"
 | `grep` | Search file contents with regex |
 | `ls` | List files and directories |
 
-Destructive tools (`bash`, `write`, `edit`) show a diff preview and require confirmation before executing.
+Destructive tools (`bash`, `write`, `edit`) require confirmation before executing. `write` and `edit` show a diff preview at the confirmation prompt.
 
 ### Custom Tools
 
