@@ -1,21 +1,15 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/x/ansi"
-	"github.com/rivo/uniseg"
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
@@ -78,6 +72,37 @@ var (
 	tuiModeTerminal = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("3")) // yellow
+
+	// Tab bar styles
+	tuiTabActive = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("8"))
+
+	tuiTabActiveFocused = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("15"))
+
+	tuiTabInactive = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8"))
+
+	tuiTabNew = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")).
+			Italic(true)
+
+	tuiTabRunning = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("3"))
+
+	tuiTabNeedsAttention = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("1")).
+				Bold(true)
+
+	tuiTabSubAgent = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("4"))
+
+	tuiTabDone = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("2"))
 )
 
 // ─── TUI (public wrapper) ───────────────────────────────────────────────────
@@ -114,6 +139,25 @@ type tuiConfirmMsg struct {
 	reply chan agent.ConfirmResult
 }
 
+// sessionMsg wraps a message with the session ID it belongs to.
+type sessionMsg struct {
+	sessionID int
+	inner     tea.Msg
+}
+
+// tuiSpawnMsg is sent by the dispatch tool to request a new sub-agent session.
+type tuiSpawnMsg struct {
+	task     string
+	parentID int
+	resultCh chan string
+	errCh    chan error
+}
+
+// tuiSubAgentDoneMsg is sent when a sub-agent session completes.
+type tuiSubAgentDoneMsg struct {
+	sessionID int
+}
+
 // ─── Bubble Tea model ────────────────────────────────────────────────────────
 
 type tuiState int
@@ -127,125 +171,100 @@ const (
 const maxInputHeight = 10 // max lines the input area can grow to
 
 type tuiModel struct {
-	agent    *agent.Agent
-	client   *api.Client
-	cwd      string
-	width    int
-	height   int
-	state    tuiState
-	output   viewport.Model
-	input    textarea.Model
-	lines    []string
-	confirm  *tuiConfirmMsg
-	quitting       bool
-	scrollback     bool                // true when user has scrolled up from bottom
-	cancelFn       context.CancelFunc  // cancels the in-flight agent call
-	msgCh          chan tea.Msg
-	inputHeight    int                 // current visual height of the input area
-	initialPrompt  string              // if set, sent automatically on Init
+	client *api.Client
+	cwd    string
+	width  int
+	height int
 
-	// Status bar stats
-	contextUsed int     // tokens used in last response (input + output)
-	cacheRead   int     // cache read tokens in last response
-	cacheCreate int     // cache creation tokens in last response
-	lastCost    float64 // cost of last API call
-	totalCost   float64 // cumulative cost
+	sessions []*session // all open sessions
+	active   int        // index of the currently visible session
+	nextID   int        // monotonically increasing ID for new sessions
+
+	quitting       bool
+	tabFocused     bool // true when the tab bar has focus (arrows navigate tabs)
+	newTabFocused  bool // true when the "+ New Session" button is focused in tab bar
+	msgCh          chan tea.Msg
+	initialPrompt  string // if set, sent automatically on Init
+}
+
+// cur returns the currently active session.
+func (m *tuiModel) cur() *session {
+	return m.sessions[m.active]
+}
+
+// sessionByID finds a session by its ID. Returns nil if not found.
+func (m *tuiModel) sessionByID(id int) *session {
+	for _, s := range m.sessions {
+		if s.id == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// sessionIndexByID returns the index of a session by its ID, or -1.
+func (m *tuiModel) sessionIndexByID(id int) int {
+	for i, s := range m.sessions {
+		if s.id == id {
+			return i
+		}
+	}
+	return -1
 }
 
 func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
-	ta := textarea.New()
-	ta.Placeholder = "Ask anything..."
-	ta.Prompt = "❯ "
-	ta.CharLimit = 0
-	ta.SetHeight(1)
-	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.Focus()
-
-	vp := viewport.New(80, 20)
-	vp.SetContent("")
-	// Disable all default keybindings — we handle scrolling manually to avoid
-	// conflicts with the textarea (arrow keys, j/k, etc.).
-	vp.KeyMap = viewport.KeyMap{
-		PageDown:     key.NewBinding(key.WithDisabled()),
-		PageUp:       key.NewBinding(key.WithDisabled()),
-		HalfPageUp:   key.NewBinding(key.WithDisabled()),
-		HalfPageDown: key.NewBinding(key.WithDisabled()),
-		Down:         key.NewBinding(key.WithDisabled()),
-		Up:           key.NewBinding(key.WithDisabled()),
-		Left:         key.NewBinding(key.WithDisabled()),
-		Right:        key.NewBinding(key.WithDisabled()),
-	}
-
 	msgCh := make(chan tea.Msg, 64)
 
 	m := tuiModel{
 		client:        client,
 		cwd:           cwd,
-		input:         ta,
-		output:        vp,
-		state:         tuiStateInput,
 		msgCh:         msgCh,
-		inputHeight:   1,
 		initialPrompt: prompt,
+		nextID:        0,
 	}
 
-	m.agent = agent.New(client, cwd,
-		agent.WithTextCallback(func(text string) {
-			msgCh <- tuiAppendMsg{text: tuiDim.Render(text)}
-		}),
-		agent.WithToolCallback(func(name, summary string) {
-			style := tuiGreen
-			switch name {
-			case "bash", "write", "edit":
-				style = tuiRed
-			}
-			line := tuiDim.Render(" "+style.Render(name)) + " " + tuiDim.Render(summary)
-			msgCh <- tuiAppendMsg{text: line}
-		}),
-		agent.WithToolResultCallback(func(name, result string, isError bool) {
-			if result == "" {
-				return
-			}
-			// Truncate very long results to keep the viewport manageable
-			const maxLines = 3
-			lines := strings.Split(result, "\n")
-			truncated := false
-			if len(lines) > maxLines {
-				lines = lines[:maxLines]
-				truncated = true
-			}
-			style := tuiDim
-			if isError {
-				style = tuiRed
-			}
-			for _, line := range lines {
-				msgCh <- tuiAppendMsg{text: style.Render("  " + line)}
-			}
-			if truncated {
-				msgCh <- tuiAppendMsg{text: tuiYellow.Render(fmt.Sprintf("  ... output truncated (%d lines shown)", maxLines))}
-			}
-		}),
-		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
-			reply := make(chan agent.ConfirmResult)
-			msgCh <- tuiConfirmMsg{name: name, input: input, reply: reply}
-			return <-reply
-		}),
-		agent.WithUsageCallback(func(usage api.Usage) {
-			msgCh <- tuiUsageMsg{usage: usage}
-		}),
-		agent.WithCompactionCallback(func() {
-			msgCh <- tuiCompactionMsg{}
-		}),
-	)
+	// Create the initial default session
+	s := newSession(m.nextID, client, cwd, msgCh)
+	m.nextID++
+	m.sessions = []*session{s}
+	m.active = 0
 
-	// Welcome line
-	m.lines = []string{
-		tuiDim.Render(fmt.Sprintf("cogent — model: %s | cwd: %s", client.Model(), cwd)),
-		"",
-	}
+	// Wire up dispatch spawn for the initial session
+	m.wireDispatch(s)
 
 	return m
+}
+
+// wireDispatch sets up the dispatch tool's spawn function for a session.
+func (m *tuiModel) wireDispatch(s *session) {
+	msgCh := m.msgCh
+	parentID := s.id
+	s.setDispatchSpawn(func(task string) (string, error) {
+		resultCh := make(chan string, 1)
+		errCh := make(chan error, 1)
+		msgCh <- tuiSpawnMsg{
+			task:     task,
+			parentID: parentID,
+			resultCh: resultCh,
+			errCh:    errCh,
+		}
+		// Block until the sub-agent completes
+		select {
+		case result := <-resultCh:
+			return result, nil
+		case err := <-errCh:
+			return "", err
+		}
+	})
+}
+
+// createSession creates a new session and adds it to the model.
+func (m *tuiModel) createSession() *session {
+	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
+	m.nextID++
+	m.wireDispatch(s)
+	m.sessions = append(m.sessions, s)
+	return s
 }
 
 func (m tuiModel) Init() tea.Cmd {
@@ -267,290 +286,528 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Scrollback keys: PgUp/PgDn/Up/Down work in any state.
-		switch msg.Type {
-		case tea.KeyPgUp:
-			m.output.PageUp()
-			m.scrollback = !m.output.AtBottom()
-			return m, nil
-		case tea.KeyPgDown:
-			m.output.PageDown()
-			m.scrollback = !m.output.AtBottom()
-			return m, nil
-		case tea.KeyUp:
-			// When not typing (running/confirm), arrow keys scroll the viewport.
-			if m.state != tuiStateInput {
-				m.output.ScrollUp(3)
-				m.scrollback = !m.output.AtBottom()
-				return m, nil
-			}
-		case tea.KeyDown:
-			if m.state != tuiStateInput {
-				m.output.ScrollDown(3)
-				m.scrollback = !m.output.AtBottom()
-				return m, nil
-			}
-		case tea.KeyShiftTab:
-			// Cycle permission mode — works in input and running states so you
-			// can switch e.g. from YOLO back to Confirm mid-execution.
-			if m.state == tuiStateInput || m.state == tuiStateRunning {
-				newMode := agent.CyclePermissionMode(m.agent.GetPermissionMode())
-				m.agent.SetPermissionMode(newMode)
-				var style lipgloss.Style
-				switch newMode {
-				case agent.ModePlan:
-					style = tuiModePlan
-				case agent.ModeYOLO:
-					style = tuiModeYOLO
-				case agent.ModeTerminal:
-					style = tuiModeTerminal
-				default:
-					style = tuiModeConfirm
-				}
-				// Update prompt character based on mode
-				if newMode == agent.ModeTerminal {
-					m.input.Prompt = "$ "
-					m.input.Placeholder = "Run a command..."
-				} else {
-					m.input.Prompt = "❯ "
-					m.input.Placeholder = "Ask anything..."
-				}
-				m.appendLine(tuiDim.Render("  mode → ") + style.Render(newMode.String()))
-				return m, nil
-			}
-		}
-
-		switch m.state {
-		case tuiStateConfirm:
-			return m.handleConfirm(msg)
-		default:
-			return m.handleInput(msg)
-		}
+		return m.handleKey(msg)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.resize()             // update widths first
-		m.recalcInputHeight()  // then recalc with new wrap width
-		m.refreshContent()     // re-wrap lines to new width
+		m.resizeAll()
+		for _, s := range m.sessions {
+			s.refreshContent()
+		}
 
 	case tuiInitialPromptMsg:
 		prompt := m.initialPrompt
-		m.initialPrompt = "" // consume it
-		m.appendLine(tuiPrompt.Render("❯ " + prompt))
-		m.state = tuiStateRunning
-		m.input.Blur()
-		return m, m.sendToAgent(prompt)
+		m.initialPrompt = ""
+		s := m.cur()
+		s.appendLine(tuiPrompt.Render("❯ " + prompt))
+		s.autoName(prompt)
+		s.state = tuiStateRunning
+		s.input.Blur()
+		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg())
 
-	case tuiAppendMsg:
-		m.appendLine(msg.text)
-		cmds = append(cmds, m.waitForMsg())
+	case sessionMsg:
+		return m.handleSessionMsg(msg)
 
-	case tuiUsageMsg:
-		m.contextUsed = msg.usage.ContextUsed()
-		m.cacheRead = msg.usage.CacheReadInputTokens
-		m.cacheCreate = msg.usage.CacheCreationInputTokens
-		cost := m.client.CostForUsage(msg.usage)
-		m.lastCost = cost
-		m.totalCost += cost
-		cmds = append(cmds, m.waitForMsg())
+	case tuiSpawnMsg:
+		return m.handleSpawn(msg)
 
-	case tuiCompactionMsg:
-		m.appendLine(tuiDim.Render("  ⚡ context compacted"))
-		cmds = append(cmds, m.waitForMsg())
-
-	case tuiConfirmMsg:
-		m.confirm = &msg
-		m.state = tuiStateConfirm
-		m.appendLine(tuiRenderDiff(msg.name, msg.input))
-		summary := SummarizeConfirm(msg.name, msg.input)
-		m.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", msg.name, summary)))
-		cmds = append(cmds, m.waitForMsg())
-
-	case tuiDoneMsg:
-		m.state = tuiStateInput
-		if msg.err != nil {
-			m.appendLine(tuiYellow.Render("Error: " + msg.err.Error()))
+	case tuiSubAgentDoneMsg:
+		s := m.sessionByID(msg.sessionID)
+		if s != nil && s.isSubAgent {
+			s.name = "✓ " + s.name
 		}
-		m.appendLine("")
-		m.input.Focus()
-		cmds = append(cmds, textarea.Blink)
-
-	case tuiShellDoneMsg:
-		m.state = tuiStateInput
-		if msg.err != nil {
-			m.appendLine(tuiRed.Render("Error: " + msg.err.Error()))
-		}
-		m.appendLine("")
-		m.input.Focus()
-		cmds = append(cmds, textarea.Blink)
+		cmds = append(cmds, m.waitForMsg())
 	}
 
-	if m.state == tuiStateInput {
+	// Update the active session's input if it's in input state
+	s := m.cur()
+	if s.state == tuiStateInput {
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.recalcInputHeight()
+		s.input, cmd = s.input.Update(msg)
+		if s.recalcInputHeight() {
+			m.resizeAll()
+		}
 		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
 }
 
+// handleKey processes all key events.
+func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+
+	// Tab management keys — work in any state
+	switch msg.String() {
+	case "ctrl+t":
+		m.tabFocused = false
+		m.newTabFocused = false
+		ns := m.createSession()
+		m.active = len(m.sessions) - 1
+		m.resizeAll()
+		ns.input.Focus()
+		return m, textarea.Blink
+
+	case "ctrl+w":
+		m.tabFocused = false
+		m.newTabFocused = false
+		return m.closeCurrentSession()
+	}
+
+	// Alt+1..9 — jump to tab by number
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		r := msg.Runes[0]
+		if msg.Alt && r >= '1' && r <= '9' {
+			idx := int(r - '1')
+			if idx < len(m.sessions) {
+				m.switchToSession(idx)
+			}
+			return m, nil
+		}
+	}
+
+	// Tab bar focused — arrow keys navigate tabs
+	if m.tabFocused {
+		switch msg.Type {
+		case tea.KeyRight:
+			if m.newTabFocused {
+				// Already at the rightmost element
+				return m, nil
+			}
+			if m.active < len(m.sessions)-1 {
+				m.switchToSession(m.active + 1)
+			} else {
+				// Move focus to the "+ New Session" button
+				m.newTabFocused = true
+			}
+			return m, nil
+		case tea.KeyLeft:
+			if m.newTabFocused {
+				m.newTabFocused = false
+				return m, nil
+			}
+			if m.active > 0 {
+				m.switchToSession(m.active - 1)
+			}
+			return m, nil
+		case tea.KeyEnter:
+			if m.newTabFocused {
+				// Activate the "+ New Session" button
+				m.newTabFocused = false
+				m.tabFocused = false
+				ns := m.createSession()
+				m.active = len(m.sessions) - 1
+				m.resizeAll()
+				ns.input.Focus()
+				return m, textarea.Blink
+			}
+			// Return focus to input for existing tab
+			m.tabFocused = false
+			m.newTabFocused = false
+			if s.state == tuiStateInput {
+				s.input.Focus()
+			}
+			return m, textarea.Blink
+		case tea.KeyTab, tea.KeyEsc:
+			// Return focus to input
+			m.tabFocused = false
+			m.newTabFocused = false
+			if s.state == tuiStateInput {
+				s.input.Focus()
+			}
+			return m, textarea.Blink
+		case tea.KeyCtrlC:
+			if s.state == tuiStateRunning {
+				if s.cancelFn != nil {
+					s.cancelFn()
+					s.cancelFn = nil
+				}
+				s.appendLine(tuiDim.Render("  ⏎ interrupted"))
+				return m, nil
+			}
+			m.quitting = true
+			return m, tea.Quit
+		default:
+			// Any other key — return focus to input and process the key
+			m.tabFocused = false
+			m.newTabFocused = false
+			if s.state == tuiStateInput {
+				s.input.Focus()
+			}
+			// Fall through to normal handling below
+		}
+	}
+
+	// Tab key toggles focus to the tab bar
+	if msg.Type == tea.KeyTab && !m.tabFocused {
+		m.tabFocused = true
+		s.input.Blur()
+		return m, nil
+	}
+
+	// Scrollback keys: PgUp/PgDn/Up/Down work in any state.
+	switch msg.Type {
+	case tea.KeyPgUp:
+		s.output.PageUp()
+		s.scrollback = !s.output.AtBottom()
+		return m, nil
+	case tea.KeyPgDown:
+		s.output.PageDown()
+		s.scrollback = !s.output.AtBottom()
+		return m, nil
+	case tea.KeyUp:
+		if s.state != tuiStateInput {
+			s.output.ScrollUp(3)
+			s.scrollback = !s.output.AtBottom()
+			return m, nil
+		}
+	case tea.KeyDown:
+		if s.state != tuiStateInput {
+			s.output.ScrollDown(3)
+			s.scrollback = !s.output.AtBottom()
+			return m, nil
+		}
+	case tea.KeyShiftTab:
+		if s.state == tuiStateInput || s.state == tuiStateRunning {
+			newMode := agent.CyclePermissionMode(s.agent.GetPermissionMode())
+			s.agent.SetPermissionMode(newMode)
+			var style lipgloss.Style
+			switch newMode {
+			case agent.ModePlan:
+				style = tuiModePlan
+			case agent.ModeYOLO:
+				style = tuiModeYOLO
+			case agent.ModeTerminal:
+				style = tuiModeTerminal
+			default:
+				style = tuiModeConfirm
+			}
+			if newMode == agent.ModeTerminal {
+				s.input.Prompt = "$ "
+				s.input.Placeholder = "Run a command..."
+			} else {
+				s.input.Prompt = "❯ "
+				s.input.Placeholder = "Ask anything..."
+			}
+			s.appendLine(tuiDim.Render("  mode → ") + style.Render(newMode.String()))
+			return m, nil
+		}
+	}
+
+	switch s.state {
+	case tuiStateConfirm:
+		return m.handleConfirm(msg)
+	default:
+		return m.handleInput(msg)
+	}
+}
+
 func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		if m.state == tuiStateRunning {
-			// Interrupt the in-flight agent call instead of quitting.
-			if m.cancelFn != nil {
-				m.cancelFn()
-				m.cancelFn = nil
+		if s.state == tuiStateRunning {
+			if s.cancelFn != nil {
+				s.cancelFn()
+				s.cancelFn = nil
 			}
-			m.appendLine(tuiDim.Render("  ⏎ interrupted"))
+			s.appendLine(tuiDim.Render("  ⏎ interrupted"))
 			return m, nil
 		}
 		m.quitting = true
 		return m, tea.Quit
 
 	case tea.KeyEnter:
-		value := strings.TrimSpace(m.input.Value())
+		value := strings.TrimSpace(s.input.Value())
 		if value == "" {
 			return m, nil
 		}
-		m.input.Reset()
-		m.inputHeight = 1
-		m.input.SetHeight(1)
-		m.resize()
+		s.input.Reset()
+		s.inputHeight = 1
+		s.input.SetHeight(1)
+		m.resizeAll()
 
-		switch value {
-		case "/quit", "/exit", "/q":
+		// Check for commands
+		switch {
+		case value == "/quit" || value == "/exit" || value == "/q":
 			m.quitting = true
 			return m, tea.Quit
-		case "/clear":
-			m.agent.Reset()
-			m.lines = nil
-			m.output.SetContent("")
-			m.appendLine(tuiDim.Render("Conversation cleared."))
+
+		case value == "/clear":
+			s.agent.Reset()
+			s.lines = nil
+			s.output.SetContent("")
+			s.appendLine(tuiDim.Render("Conversation cleared."))
 			return m, nil
-		case "/help":
-			m.appendLine(tuiDim.Render("Commands: /help /clear /quit"))
-			m.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
-			m.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running), mouse wheel"))
-			m.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
-			m.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
-			m.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
+
+		case value == "/close":
+			tm, cmd := m.closeCurrentSession()
+			return tm, cmd
+
+		case strings.HasPrefix(value, "/rename "):
+			newName := strings.TrimSpace(strings.TrimPrefix(value, "/rename "))
+			if newName != "" {
+				s.name = newName
+				s.nameSet = true
+				s.appendLine(tuiDim.Render(fmt.Sprintf("Session renamed to %q.", newName)))
+			}
+			return m, nil
+
+		case value == "/sessions":
+			for i, sess := range m.sessions {
+				marker := "  "
+				if i == m.active {
+					marker = "→ "
+				}
+				status := "idle"
+				if sess.state == tuiStateRunning {
+					status = "running"
+				} else if sess.state == tuiStateConfirm {
+					status = "needs confirmation"
+				}
+				prefix := ""
+				if sess.isSubAgent {
+					prefix = "⤵ "
+				}
+				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s%s (%s)", marker, i+1, prefix, sess.name, status)))
+			}
+			return m, nil
+
+		case value == "/help":
+			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions"))
+			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
+			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session"))
+			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
+			s.appendLine(tuiDim.Render("Alt+1..9: jump to session by number"))
+			s.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"))
+			s.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
+			s.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
+			s.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
 			return m, nil
 		}
 
 		// Terminal mode: run as shell command
-		if m.agent.GetPermissionMode() == agent.ModeTerminal {
-			m.appendLine(tuiYellow.Render("$ " + value))
-			m.state = tuiStateRunning
-			m.input.Blur()
-			return m, m.runShellCommand(value)
+		if s.agent.GetPermissionMode() == agent.ModeTerminal {
+			s.appendLine(tuiYellow.Render("$ " + value))
+			s.state = tuiStateRunning
+			s.input.Blur()
+			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg())
 		}
 
-		m.appendLine(tuiPrompt.Render("❯ " + value))
-		m.state = tuiStateRunning
-		m.input.Blur()
-		return m, m.sendToAgent(value)
+		s.appendLine(tuiPrompt.Render("❯ " + value))
+		s.autoName(value)
+		s.state = tuiStateRunning
+		s.input.Blur()
+		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg())
 
 	default:
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		m.recalcInputHeight()
+		s.input, cmd = s.input.Update(msg)
+		if s.recalcInputHeight() {
+			m.resizeAll()
+		}
 		return m, cmd
 	}
 }
 
 func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.confirm == nil {
+	s := m.cur()
+	if s.confirm == nil {
 		return m, nil
 	}
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		m.appendLine(tuiRed.Render("  ✗ denied (interrupted)"))
-		m.confirm.reply <- agent.ConfirmDeny
-		m.confirm = nil
-		if m.cancelFn != nil {
-			m.cancelFn()
-			m.cancelFn = nil
+		s.appendLine(tuiRed.Render("  ✗ denied (interrupted)"))
+		s.confirm.reply <- agent.ConfirmDeny
+		s.confirm = nil
+		if s.cancelFn != nil {
+			s.cancelFn()
+			s.cancelFn = nil
 		}
-		m.state = tuiStateRunning
+		s.state = tuiStateRunning
 		return m, nil
 
 	case tea.KeyEnter:
-		m.appendLine(tuiGreen.Render("  ✓ allowed"))
-		m.confirm.reply <- agent.ConfirmAllow
-		m.confirm = nil
-		m.state = tuiStateRunning
+		s.appendLine(tuiGreen.Render("  ✓ allowed"))
+		s.confirm.reply <- agent.ConfirmAllow
+		s.confirm = nil
+		s.state = tuiStateRunning
 		return m, nil
 
 	case tea.KeyRunes:
 		ch := strings.ToLower(string(msg.Runes))
 		switch ch {
 		case "y":
-			m.appendLine(tuiGreen.Render("  ✓ allowed"))
-			m.confirm.reply <- agent.ConfirmAllow
-			m.confirm = nil
-			m.state = tuiStateRunning
+			s.appendLine(tuiGreen.Render("  ✓ allowed"))
+			s.confirm.reply <- agent.ConfirmAllow
+			s.confirm = nil
+			s.state = tuiStateRunning
 			return m, nil
 		case "n":
-			m.appendLine(tuiRed.Render("  ✗ denied"))
-			m.confirm.reply <- agent.ConfirmDeny
-			m.confirm = nil
-			m.state = tuiStateRunning
+			s.appendLine(tuiRed.Render("  ✗ denied"))
+			s.confirm.reply <- agent.ConfirmDeny
+			s.confirm = nil
+			s.state = tuiStateRunning
 			return m, nil
 		case "a":
-			toolName := m.confirm.name
-			m.appendLine(tuiGreen.Render(fmt.Sprintf("  ✓ always allow %s", toolName)))
-			m.confirm.reply <- agent.ConfirmAlways
-			m.confirm = nil
-			m.state = tuiStateRunning
+			toolName := s.confirm.name
+			s.appendLine(tuiGreen.Render(fmt.Sprintf("  ✓ always allow %s", toolName)))
+			s.confirm.reply <- agent.ConfirmAlways
+			s.confirm = nil
+			s.state = tuiStateRunning
 			return m, nil
 		}
 	}
 	return m, nil
 }
 
-func (m *tuiModel) sendToAgent(prompt string) tea.Cmd {
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancelFn = cancel
-	return func() tea.Msg {
-		err := m.agent.SendCtx(ctx, prompt)
-		if err != nil && ctx.Err() != nil {
-			// Cancelled by user — not a real error.
-			return tuiDoneMsg{err: nil}
-		}
-		return tuiDoneMsg{err: err}
+// handleSessionMsg routes a session-tagged message to the correct session.
+func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
+	s := m.sessionByID(msg.sessionID)
+	if s == nil {
+		// Session was closed — drain the message
+		return m, m.waitForMsg()
 	}
+
+	var cmds []tea.Cmd
+
+	switch inner := msg.inner.(type) {
+	case tuiAppendMsg:
+		s.appendLine(inner.text)
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiUsageMsg:
+		s.contextUsed = inner.usage.ContextUsed()
+		s.cacheRead = inner.usage.CacheReadInputTokens
+		s.cacheCreate = inner.usage.CacheCreationInputTokens
+		cost := m.client.CostForUsage(inner.usage)
+		s.lastCost = cost
+		s.totalCost += cost
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiCompactionMsg:
+		s.appendLine(tuiDim.Render("  ⚡ context compacted"))
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiConfirmMsg:
+		s.confirm = &inner
+		s.state = tuiStateConfirm
+		s.appendLine(tuiRenderDiff(inner.name, inner.input))
+		summary := SummarizeConfirm(inner.name, inner.input)
+		s.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", inner.name, summary)))
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiDoneMsg:
+		s.state = tuiStateInput
+		if inner.err != nil {
+			s.appendLine(tuiYellow.Render("Error: " + inner.err.Error()))
+		}
+		s.appendLine("")
+		// Only focus the input if this is the active session
+		if s.id == m.cur().id {
+			s.input.Focus()
+			cmds = append(cmds, textarea.Blink)
+		}
+		// If this is a sub-agent, send result back to parent
+		if s.isSubAgent && s.resultCh != nil {
+			result := s.agent.LastResponse()
+			s.resultCh <- result
+			s.resultCh = nil
+			m.msgCh <- tuiSubAgentDoneMsg{sessionID: s.id}
+		}
+
+	case tuiShellDoneMsg:
+		s.state = tuiStateInput
+		if inner.err != nil {
+			s.appendLine(tuiRed.Render("Error: " + inner.err.Error()))
+		}
+		s.appendLine("")
+		if s.id == m.cur().id {
+			s.input.Focus()
+			cmds = append(cmds, textarea.Blink)
+		}
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
-func (m *tuiModel) runShellCommand(command string) tea.Cmd {
-	return func() tea.Msg {
-		cmd := exec.Command("sh", "-c", command)
-		cmd.Dir = m.cwd
-		// Scrub API key from subprocess environment.
-		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "ANTHROPIC_API_KEY=") {
-				cmd.Env = append(cmd.Env, e)
-			}
-		}
-		out, err := cmd.CombinedOutput()
-		output := strings.TrimRight(string(out), "\n")
-		if output != "" {
-			for _, line := range strings.Split(output, "\n") {
-				m.msgCh <- tuiAppendMsg{text: tuiDim.Render("  " + line)}
-			}
-		}
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				m.msgCh <- tuiAppendMsg{text: tuiRed.Render(fmt.Sprintf("  (exit code %d)", exitErr.ExitCode()))}
-				return tuiShellDoneMsg{err: nil}
-			}
-			return tuiShellDoneMsg{err: err}
-		}
-		return tuiShellDoneMsg{err: nil}
+// handleSpawn creates a new sub-agent session from a dispatch tool call.
+func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
+	child := m.createSession()
+	child.parentID = msg.parentID
+	child.isSubAgent = true
+	child.resultCh = msg.resultCh
+
+	// Name from task
+	name := strings.TrimSpace(msg.task)
+	if idx := strings.IndexByte(name, '\n'); idx > 0 {
+		name = name[:idx]
 	}
+	if len(name) > 24 {
+		name = name[:24] + "…"
+	}
+	child.name = "⤵ " + name
+	child.nameSet = true
+
+	// Inherit permission mode from parent
+	parent := m.sessionByID(msg.parentID)
+	if parent != nil {
+		child.agent.SetPermissionMode(parent.agent.GetPermissionMode())
+	}
+
+	m.resizeAll()
+
+	// Start the sub-agent — runs in background
+	child.appendLine(tuiPrompt.Render("❯ " + msg.task))
+	child.state = tuiStateRunning
+	child.input.Blur()
+
+	return m, tea.Batch(child.sendToAgent(msg.task, m.msgCh), m.waitForMsg())
+}
+
+// switchToSession switches to the session at the given index.
+func (m *tuiModel) switchToSession(idx int) {
+	if idx < 0 || idx >= len(m.sessions) {
+		return
+	}
+	// Blur the current session's input
+	m.cur().input.Blur()
+	m.active = idx
+	s := m.cur()
+	// Focus the new session's input if it's in input state and tab bar isn't focused
+	if s.state == tuiStateInput && !m.tabFocused {
+		s.input.Focus()
+	}
+	m.resizeAll()
+}
+
+// closeCurrentSession closes the active session tab.
+func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
+	if len(m.sessions) == 1 {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	s := m.cur()
+	if s.cancelFn != nil {
+		s.cancelFn()
+	}
+	// If it's a sub-agent that hasn't sent its result, send an error
+	if s.isSubAgent && s.resultCh != nil {
+		s.resultCh <- "Error: sub-agent session was closed by user"
+		s.resultCh = nil
+	}
+	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
+	if m.active >= len(m.sessions) {
+		m.active = len(m.sessions) - 1
+	}
+	m.resizeAll()
+	ns := m.cur()
+	if ns.state == tuiStateInput {
+		ns.input.Focus()
+	}
+	return m, textarea.Blink
 }
 
 // ─── View ────────────────────────────────────────────────────────────────────
@@ -560,44 +817,48 @@ func (m tuiModel) View() string {
 		return tuiDim.Render("Goodbye!") + "\n"
 	}
 
-	innerWidth := m.width - 2 // account for left+right border chars
+	s := m.sessions[m.active]
+
+	innerWidth := m.width - 2
 	if innerWidth < 0 {
 		innerWidth = 0
 	}
 
 	var b strings.Builder
-	b.WriteString(m.output.View())
+	b.WriteString(s.output.View())
 	b.WriteString("\n")
 
 	// Build the prompt content
 	var promptContent string
-	switch m.state {
+	switch s.state {
 	case tuiStateConfirm:
 		promptContent = tuiStatus.Render(" y/n/a ")
 	case tuiStateRunning:
-		if m.agent.GetPermissionMode() == agent.ModeTerminal {
+		if s.agent.GetPermissionMode() == agent.ModeTerminal {
 			promptContent = tuiStatus.Render(" running... ") + tuiDim.Render("(ctrl+c to interrupt)")
 		} else {
 			promptContent = tuiStatus.Render(" thinking... ") + tuiDim.Render("(ctrl+c to interrupt)")
 		}
 	default:
-		promptContent = m.input.View()
+		promptContent = s.input.View()
 	}
 
 	// Build status bar content
-	statusContent := m.renderStatusBar()
+	statusContent := s.renderStatusBar(m.client, m.cwd)
+
+	// Build tab bar content (merged border + label/bottom rows)
+	mergedBorder, tabRows := m.renderTabBar(innerWidth)
 
 	// Draw box around prompt + status bar
 	topBorder := tuiBorder.Render("╭" + strings.Repeat("─", innerWidth) + "╮")
 	midBorder := tuiBorder.Render("├" + strings.Repeat("─", innerWidth) + "┤")
-	botBorder := tuiBorder.Render("╰" + strings.Repeat("─", innerWidth) + "╯")
 	leftEdge := tuiBorder.Render("│")
 	rightEdge := tuiBorder.Render("│")
 
 	b.WriteString(topBorder)
 	b.WriteString("\n")
 
-	// Render prompt lines — the textarea may span multiple visual lines.
+	// Render prompt lines
 	promptLines := strings.Split(promptContent, "\n")
 	for _, pl := range promptLines {
 		plWidth := lipgloss.Width(pl)
@@ -618,96 +879,183 @@ func (m tuiModel) View() string {
 
 	b.WriteString(leftEdge + statusContent + rightEdge)
 	b.WriteString("\n")
-	b.WriteString(botBorder)
+
+	// Merged border: box bottom + tab tops combined
+	b.WriteString(mergedBorder)
+	b.WriteString("\n")
+
+	// Tab label and bottom rows
+	b.WriteString(tabRows)
 
 	return b.String()
 }
 
-// ─── TUI helpers ─────────────────────────────────────────────────────────────
-
-func (m *tuiModel) resize() {
-	// Layout (rows below the viewport):
-	//   1  top border    ╭───╮
-	//   N  input lines   │...│  (dynamic, 1..maxInputHeight)
-	//   1  mid border    ├───┤
-	//   1  status line   │...│
-	//   1  bottom border ╰───╯
-	//   = 4 + N
-	chrome := 4 + m.inputHeight
-	m.output.Width = m.width
-	vpHeight := m.height - chrome
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	m.output.Height = vpHeight
-	m.input.SetWidth(m.width - 2) // account for left+right border
-}
-
-// recalcInputHeight computes how many visual lines the current input text
-// occupies (accounting for soft-wrapping at the terminal width) and resizes
-// the textarea + viewport accordingly.
-func (m *tuiModel) recalcInputHeight() {
-	needed := m.inputVisualLines()
-	if needed < 1 {
-		needed = 1
-	}
-	if needed > maxInputHeight {
-		needed = maxInputHeight
-	}
-	if needed != m.inputHeight {
-		m.inputHeight = needed
-		m.input.SetHeight(needed)
-		m.resize()
-	}
-}
-
-// inputVisualLines returns the number of visual (rendered) lines the current
-// textarea content occupies, accounting for soft wrapping.
-func (m *tuiModel) inputVisualLines() int {
-	value := m.input.Value()
-	if value == "" {
-		return 1
+// renderTabBar builds the tab bar that connects to the status box bottom border.
+// Returns (mergedBorder, tabRows) where mergedBorder replaces the box's bottom
+// border and incorporates the tab top edges, and tabRows has the label + bottom rows.
+func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
+	type tabInfo struct {
+		label string
+		style lipgloss.Style
+		width int // rendered cell width of " label "
 	}
 
-	// Width() returns the pure text wrapping width (already excludes prompt
-	// width, line numbers, and base style frame).
-	wrapWidth := m.input.Width()
-	if wrapWidth < 1 {
-		wrapWidth = 1
-	}
+	var tabs []tabInfo
 
-	total := 0
-	for _, line := range strings.Split(value, "\n") {
-		lineWidth := uniseg.StringWidth(line)
-		if lineWidth == 0 {
-			total++ // empty line still occupies one visual row
+	for i, s := range m.sessions {
+		label := s.name
+
+		// Add status suffixes
+		if s.state == tuiStateRunning {
+			label += " ⟳"
+		} else if s.state == tuiStateConfirm {
+			label += " ⚠"
+		}
+
+		var style lipgloss.Style
+		if i == m.active {
+			if m.tabFocused && !m.newTabFocused {
+				style = tuiTabActiveFocused
+			} else {
+				style = tuiTabActive
+			}
+		} else if s.isSubAgent && s.state == tuiStateInput && strings.HasPrefix(s.name, "✓") {
+			style = tuiTabDone
+		} else if s.state == tuiStateConfirm {
+			style = tuiTabNeedsAttention
+		} else if s.isSubAgent {
+			style = tuiTabSubAgent
+		} else if s.state == tuiStateRunning {
+			style = tuiTabRunning
 		} else {
-			total += int(math.Ceil(float64(lineWidth) / float64(wrapWidth)))
+			style = tuiTabInactive
+		}
+
+		w := lipgloss.Width(style.Render(" " + label + " "))
+		tabs = append(tabs, tabInfo{label: label, style: style, width: w})
+	}
+
+	// New session button
+	var newLabel string
+	var newStyle lipgloss.Style
+	if m.newTabFocused {
+		if len(m.sessions) == 1 {
+			newLabel = "+ New Session"
+		} else {
+			newLabel = "+"
+		}
+		newStyle = tuiTabActiveFocused
+	} else if len(m.sessions) == 1 {
+		newLabel = "+ New Session"
+		newStyle = tuiTabNew
+	} else {
+		newLabel = "+"
+		newStyle = tuiTabNew
+	}
+	nw := lipgloss.Width(newStyle.Render(" " + newLabel + " "))
+	tabs = append(tabs, tabInfo{label: newLabel, style: newStyle, width: nw})
+
+	// Build the merged border line: combines box bottom with tab tops.
+	// Layout: ╰─┬───────┬───┬─...─╯
+	// The tabs start at offset 1 (matching the " " prefix in tab rows).
+	// Adjacent tabs share their border character (│ between tabs).
+	// Each tab occupies width + 1 cells (content + shared right border),
+	// except the first which also has its own left border (+1 more).
+
+	// Position 0 = ╰ (left corner of box)
+	// Then boxWidth chars of ─ (positions 1..boxWidth)
+	// Position boxWidth+1 = ╯ (right corner of box)
+	// Total merged line width = boxWidth + 2
+
+	totalWidth := boxWidth + 2
+	border := make([]rune, totalWidth)
+	for i := range border {
+		border[i] = '─'
+	}
+	border[0] = '╰'
+	border[totalWidth-1] = '╯'
+
+	// Place tab wall positions on the border using ┬.
+	// Adjacent tabs share their border: right edge of tab N = left edge of tab N+1.
+	pos := 1 // leading space offset
+	for i, t := range tabs {
+		leftEdge := pos
+		rightEdge := pos + t.width + 1 // +1 for the right border char
+		if leftEdge > 0 && leftEdge < totalWidth-1 {
+			border[leftEdge] = '┬'
+		}
+		if rightEdge > 0 && rightEdge < totalWidth-1 {
+			border[rightEdge] = '┬'
+		}
+		if i < len(tabs)-1 {
+			pos = rightEdge // shared border: next tab's left edge = this tab's right edge
 		}
 	}
-	return total
+
+	// Fix: if the last tab's right edge is beyond box, don't corrupt
+	// Also handle the special corner cases:
+	// - If a tab edge lands on position 0, use ╰ still (it won't, pos starts at 1)
+	// - If a tab edge lands on the last position, use ╯ still
+	border[0] = '╰'
+	border[totalWidth-1] = '╯'
+
+	mergedBorder := tuiBorder.Render(string(border))
+
+	// Build label row and bottom row
+	// Adjacent tabs share their border character (│ between, ╰╯ merged to ╨).
+	var midBuf, botBuf strings.Builder
+	midBuf.WriteString(" ")
+	botBuf.WriteString(" ")
+	for i, t := range tabs {
+		if i == 0 {
+			midBuf.WriteString(tuiBorder.Render("│"))
+		} else {
+			// shared border with previous tab
+			midBuf.WriteString(tuiBorder.Render("│"))
+		}
+		midBuf.WriteString(t.style.Render(" " + t.label + " "))
+		if i == len(tabs)-1 {
+			midBuf.WriteString(tuiBorder.Render("│"))
+		}
+
+		if i == 0 {
+			botBuf.WriteString(tuiBorder.Render("╰"))
+		} else {
+			botBuf.WriteString(tuiBorder.Render("╨"))
+		}
+		botBuf.WriteString(tuiBorder.Render(strings.Repeat("─", t.width)))
+		if i == len(tabs)-1 {
+			botBuf.WriteString(tuiBorder.Render("╯"))
+		}
+	}
+
+	midRow := midBuf.String()
+	botRow := botBuf.String()
+
+	if m.tabFocused {
+		hint := tuiDim.Render("  ←/→ navigate  enter select  esc return")
+		midRow += hint
+	}
+
+	return mergedBorder, midRow + "\n" + botRow
 }
 
-func (m *tuiModel) appendLine(text string) {
-	m.lines = append(m.lines, text)
-	m.refreshContent()
-}
+// ─── TUI helpers ─────────────────────────────────────────────────────────────
 
-// refreshContent re-wraps all lines to the current viewport width and updates
-// the viewport content.
-func (m *tuiModel) refreshContent() {
-	w := m.output.Width
-	if w < 1 {
-		w = 80
-	}
-	var wrapped []string
-	for _, line := range m.lines {
-		wrapped = append(wrapped, ansi.Wrap(line, w, ""))
-	}
-	m.output.SetContent(strings.Join(wrapped, "\n"))
-	if !m.scrollback {
-		m.output.GotoBottom()
-	}
+// resizeAll updates the layout for the active session based on current terminal size.
+func (m *tuiModel) resizeAll() {
+	s := m.cur()
+	// Layout (rows below the viewport):
+	//   1  top border       ╭───╮
+	//   N  input lines      │...│  (dynamic, 1..maxInputHeight)
+	//   1  mid border       ├───┤
+	//   1  status line      │...│
+	//   1  merged border    ╰─┤..├─╯  (box bottom + tab tops)
+	//   2  tab rows         │..│ │..│
+	//                       ╰──╯ ╰──╯
+	//   = 6 + N
+	chrome := 6 + s.inputHeight
+	s.resize(m.width, m.height, chrome)
 }
 
 // tuiRenderDiff renders a diff using lipgloss styles for the viewport.
@@ -733,92 +1081,21 @@ func tuiRenderDiff(name string, input map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
-// ─── Status bar ─────────────────────────────────────────────────────────────
+// ─── Git helpers ────────────────────────────────────────────────────────────
 
-func (m tuiModel) renderStatusBar() string {
-	if m.width == 0 {
-		return ""
-	}
-
-	sep := tuiStatusBar.Render("  │  ")
-
-	// Model
-	model := tuiStatusKey.Render(m.client.Model())
-
-	// Permission mode
-	mode := m.agent.GetPermissionMode()
-	var modeStr string
-	switch mode {
-	case agent.ModePlan:
-		modeStr = tuiModePlan.Render("Plan")
-	case agent.ModeYOLO:
-		modeStr = tuiModeYOLO.Render("YOLO")
-	case agent.ModeTerminal:
-		modeStr = tuiModeTerminal.Render("Terminal")
-	default:
-		modeStr = tuiModeConfirm.Render("Confirm")
-	}
-
-	// Context: used / total + cache info
-	contextTotal := m.client.ContextWindow()
-	contextStr := tuiStatusValue.Render(fmt.Sprintf("%s/%s",
-		formatTokens(m.contextUsed), formatTokens(contextTotal)))
-	var cacheParts []string
-	if m.cacheRead > 0 {
-		cacheParts = append(cacheParts, tuiGreen.Render(fmt.Sprintf("⚡%s read", formatTokens(m.cacheRead))))
-	}
-	if m.cacheCreate > 0 {
-		cacheParts = append(cacheParts, tuiYellow.Render(fmt.Sprintf("+%s write", formatTokens(m.cacheCreate))))
-	}
-	if len(cacheParts) > 0 {
-		contextStr += tuiStatusBar.Render(" (") + strings.Join(cacheParts, tuiStatusBar.Render(", ")) + tuiStatusBar.Render(")")
-	}
-
-	// Cost
-	lastCostStr := tuiStatusValue.Render(formatCost(m.lastCost))
-	totalCostStr := tuiStatusValue.Render(formatCost(m.totalCost))
-
-	// PWD (shortened)
-	pwd := shortenPath(m.cwd)
-	pwdStr := tuiStatusValue.Render(pwd)
-
-	// Git
-	gitStr := m.renderGitStatus()
-
-	// Assemble left side
-	left := tuiStatusBar.Render(" ") +
-		model + sep +
-		modeStr + tuiStatusBar.Render(" (shift+tab)") + sep +
-		tuiStatusBar.Render("ctx ") + contextStr + sep +
-		tuiStatusBar.Render("last ") + lastCostStr +
-		tuiStatusBar.Render(" total ") + totalCostStr + sep +
-		pwdStr
-
-	if gitStr != "" {
-		left += sep + gitStr
-	}
-
-	left += tuiStatusBar.Render(" ")
-
-	return left
-}
-
-func (m tuiModel) renderGitStatus() string {
-	branch := gitBranch(m.cwd)
+func renderGitStatus(cwd string) string {
+	branch := gitBranch(cwd)
 	if branch == "" {
 		return ""
 	}
-	dirty := gitDirty(m.cwd)
+	dirty := gitDirty(cwd)
 	if dirty {
 		return tuiStatusGitDirty.Render(" " + branch + "*")
 	}
 	return tuiStatusGitClean.Render(" " + branch)
 }
 
-// ─── Git helpers ────────────────────────────────────────────────────────────
-
 func gitBranch(dir string) string {
-	// Fast path: read .git/HEAD directly
 	gitDir := findGitDir(dir)
 	if gitDir == "" {
 		return ""
@@ -831,7 +1108,6 @@ func gitBranch(dir string) string {
 	if strings.HasPrefix(s, "ref: refs/heads/") {
 		return strings.TrimPrefix(s, "ref: refs/heads/")
 	}
-	// Detached HEAD — return short hash
 	if len(s) >= 8 {
 		return s[:8]
 	}

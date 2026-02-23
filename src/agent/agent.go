@@ -334,8 +334,29 @@ func (a *Agent) Reset() {
 	a.allowedTools = make(map[string]bool)
 }
 
+// LastResponse returns the text from the most recent assistant message.
+func (a *Agent) LastResponse() string {
+	for i := len(a.messages) - 1; i >= 0; i-- {
+		if a.messages[i].Role == api.RoleAssistant {
+			var texts []string
+			for _, block := range a.messages[i].Content {
+				if block.Type == "text" {
+					texts = append(texts, block.Text)
+				}
+			}
+			if len(texts) > 0 {
+				return strings.Join(texts, "\n")
+			}
+		}
+	}
+	return ""
+}
+
 func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode.Store(int32(m)) }
 func (a *Agent) GetPermissionMode() PermissionMode  { return PermissionMode(a.permMode.Load()) }
+
+// Registry returns the agent's tool registry for external tool registration.
+func (a *Agent) Registry() *tools.Registry { return a.registry }
 
 // AllowedTools returns the set of tool names that have been "always allowed" for this session.
 func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }

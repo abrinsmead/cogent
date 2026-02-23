@@ -64,6 +64,17 @@ func (r *Registry) Register(t Tool) {
 	r.tools[t.Definition().Name] = t
 }
 
+// RegisterTool allows external packages to add tools to the registry after
+// construction. Returns false if the name is already taken.
+func (r *Registry) RegisterTool(t Tool) bool {
+	name := t.Definition().Name
+	if _, exists := r.tools[name]; exists {
+		return false
+	}
+	r.tools[name] = t
+	return true
+}
+
 func (r *Registry) Get(name string) (Tool, error) {
 	t, ok := r.tools[name]
 	if !ok {
