@@ -133,7 +133,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -315,6 +315,22 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress {
+			s := m.cur()
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				s.output.ScrollUp(3)
+				s.scrollback = !s.output.AtBottom()
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				s.output.ScrollDown(3)
+				s.scrollback = !s.output.AtBottom()
+				return m, nil
+			}
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width

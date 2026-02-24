@@ -1,18 +1,17 @@
 # Cogent
 
-A lightweight coding agent written in Go.
+A lightweight coding agent for the terminal.
 
 <img width="1440" height="876" alt="image" src="https://github.com/user-attachments/assets/03a85436-adc8-4182-9827-54cbd8744000" />
 
-Cogent runs in your terminal and can read, edit, and create files, execute shell commands, and search your codebase — all with confirmation prompts before any destructive action.
+Cogent runs in your terminal and can read, edit, and create files, execute shell commands, delegate subtasks to sub-agents, and search your codebase — all with confirmation prompts before any destructive action.
 
 ## Setup
 
-Requires Go 1.24+ and an Anthropic API key.
+Requires an Anthropic API key.
 
 ```sh
 export ANTHROPIC_API_KEY="sk-ant-..."
-make build      # → bin/cogent
 make install    # → /usr/local/bin/cogent
 ```
 
@@ -31,7 +30,7 @@ cogent --headless "run the test suite and fix failures"
 
 | Mode | Auto-selected when | Description |
 |------|------|-------------|
-| `tui` | Interactive TTY | Full-screen Bubble Tea interface |
+| `tui` | Interactive TTY | Full-screen terminal UI |
 | `headless` | Piped / CI with a prompt | Single-shot, auto-approves all tool calls |
 
 ## Features
@@ -47,8 +46,26 @@ cogent --headless "run the test suite and fix failures"
 | `glob` | Find files matching a pattern |
 | `grep` | Search file contents with regex |
 | `ls` | List files and directories |
+| `dispatch` | Delegate a subtask to a sub-agent running in a separate context |
 
-Destructive tools (`bash`, `write`, `edit`) require confirmation before executing. `write` and `edit` show a diff preview at the confirmation prompt.
+Destructive tools (`bash`, `write`, `edit`, `dispatch`) require confirmation before executing. `write` and `edit` show a diff preview at the confirmation prompt.
+
+### Sub-agents
+
+The `dispatch` tool lets the agent delegate subtasks to independent sub-agents. Each sub-agent runs in its own context window with the full set of tools, gets its own tab in the TUI (shown in blue with a colored status dot), and returns its final output to the parent when done. Useful for parallelizing work or isolating tasks that benefit from a fresh context.
+
+### Permission Modes
+
+Cycle with **Shift+Tab** in the TUI — works both when idle **and while the agent is running**, so you can switch from YOLO back to Confirm mid-execution if the agent starts doing something you want to review:
+
+| Mode | Behaviour |
+|------|-----------|
+| **Confirm** | Asks before destructive tools *(default)* |
+| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. |
+| **YOLO** | Auto-approves every tool call |
+| **Terminal** | Pauses the agent — your input runs as shell commands |
+
+The mode change takes effect immediately — the very next tool call will use the new mode.
 
 ### Custom Tools
 
@@ -98,70 +115,56 @@ LINEAR_USERNAME=jane.doe
 
 Variables are loaded before tool discovery, so `@env required` checks will see them. Explicit environment variables take precedence — `.env` only sets values that aren't already defined.
 
-#### Bundled Examples
-
-This project includes several custom tools in `.cogent/tools/`:
-
-| Tool | Description |
-|------|-------------|
-| `btc_price` | Get the current Bitcoin spot price via the Coinbase API |
-| `linear_tickets` | List Linear tickets assigned to a user |
-| `linear_ticket` | Get full details of a Linear ticket by ID |
-| `linear_update_ticket` | Update a Linear ticket's status, title, priority, or assignee |
-
-### Permission Modes
-
-Cycle with **Shift+Tab** in the TUI — works both when idle **and while the agent is running**, so you can switch from YOLO back to Confirm mid-execution if the agent starts doing something you want to review:
-
-| Mode | Behaviour |
-|------|-----------|
-| **Confirm** | Asks before destructive tools *(default)* |
-| **Plan** | Read-only — agent can only observe and suggest |
-| **YOLO** | Auto-approves every tool call |
-| **Terminal** | Pauses the agent — your input runs as shell commands |
-
-The mode change takes effect immediately — the very next tool call will use the new mode.
-
 ### TUI
+
+#### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
 | **Enter** | Send message / approve tool call |
 | **Shift+Tab** | Cycle permission mode (works while idle or running) |
 | **Ctrl+C** | Interrupt running agent, or quit when idle |
+| **Ctrl+T** | New session tab |
+| **Ctrl+W** | Close current session tab |
+| **Shift+←/→** | Switch tabs |
+| **Alt+1..9** | Jump to tab by number |
+| **Tab** | Focus tab bar (←/→ to navigate, Enter to select, Esc to return) |
+| **Ctrl+H** | Cycle HUD mode (status bar → overlay → off) |
 | **PgUp / PgDn** | Scroll output |
+| **↑ / ↓** | Scroll output (while agent is running) |
 | **Mouse wheel** | Scroll output |
 | **y / n / a** | Approve, deny, or always allow at confirmation prompts |
 
 The input area auto-grows as you type (up to 10 lines).
+
+#### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show help |
+| `/clear` | Clear conversation history |
+| `/rename <name>` | Rename the current session tab |
+| `/sessions` | List all sessions |
+| `/close` | Close the current session |
+| `/quit` | Exit |
 
 #### Status Bar
 
 The status bar at the bottom of the TUI shows:
 
 ```
- claude-opus-4-6  │  Confirm (shift+tab)  │  ctx 24k/200k ⚡18k read +6k write  │  last $0.12 total $0.45  │  ~/Projects/foo  │  main*
+ mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  main*
 ```
 
 | Field | Description |
 |-------|-------------|
-| **Model** | Active Anthropic model |
-| **Mode** | Current permission mode (Shift+Tab to cycle) |
+| **mod** | Active Anthropic model |
 | **ctx** | Context window usage: tokens used / model max |
-| **⚡read** | Tokens served from Anthropic's prompt cache (cache hit) — shown in green. These tokens were already cached from a previous request, so they're billed at a reduced rate (e.g. $0.30/MTok instead of $3/MTok for Sonnet). Higher is better — means you're saving money. |
-| **+write** | Tokens written into the prompt cache (cache creation) — shown in yellow. These are new tokens being cached for the first time. There's a one-time surcharge for writing them (1.25× the base input price), but subsequent requests that hit this cache will use the cheaper read rate. |
-| **last** | Cost of the most recent API response |
-| **total** | Cumulative cost for the session |
-| **Path** | Working directory (shortened) |
+| **usd** | Cumulative cost for the session |
+| **pwd** | Working directory (shortened) |
 | **Branch** | Git branch, with `*` if there are uncommitted changes |
 
-The cache indicators only appear when the respective token counts are non-zero. In a typical session, the first request shows a large **+write** (caching the system prompt and tool definitions), and subsequent requests show a large **⚡read** (reusing that cache), which significantly reduces cost and latency.
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help |
-| `/clear` | Clear conversation history |
-| `/quit` | Exit |
+The permission mode is displayed as a badge above the input area, not in the status bar. You can cycle it with Shift+Tab.
 
 ### AGENTS.md
 
