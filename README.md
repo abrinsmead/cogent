@@ -4,7 +4,7 @@ A lightweight coding agent for the terminal.
 
 <img width="1440" height="876" alt="image" src="https://github.com/user-attachments/assets/03a85436-adc8-4182-9827-54cbd8744000" />
 
-Cogent runs in your terminal and can read, edit, and create files, execute shell commands, delegate subtasks to sub-agents, and search your codebase — all with confirmation prompts before any destructive action.
+Cogent runs in your terminal and can read, edit, and create files, execute shell commands, delegate subtasks to sub-agents, and search your codebase.
 
 ## Setup
 
