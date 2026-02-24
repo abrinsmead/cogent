@@ -184,7 +184,7 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 	case splashTickMsg:
 		s.frame++
 		elapsed := time.Since(s.startTime)
-		if elapsed >= 2500*time.Millisecond {
+		if elapsed >= 3000*time.Millisecond {
 			return s, func() tea.Msg { return splashDoneMsg{} }
 		}
 		return s, splashTick()
@@ -193,12 +193,17 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 	return s, nil
 }
 
+// bgNoiseChars are subtle characters used for background noise.
+var bgNoiseChars = []rune{
+	'.', '·', ':', '∙', '°', '⋅', '∘', '⁘', '⁙', '⁚',
+	'░', '▪', '▫', '╌', '╍', '┄', '┅', '┈', '┉',
+}
+
 func (s splashModel) View() string {
 	if s.width == 0 || s.height == 0 {
 		return ""
 	}
 
-	// Calculate base intensity that pulses over time
 	elapsed := time.Since(s.startTime).Seconds()
 
 	// Build the block text lines for "COGENT"
@@ -210,7 +215,6 @@ func (s splashModel) View() string {
 		}
 	}
 
-	// Compose each row of the block text
 	var blockLines []string
 	for row := 0; row < blockHeight; row++ {
 		var line strings.Builder
@@ -225,43 +229,139 @@ func (s splashModel) View() string {
 	// Apply zalgo with varying intensity per frame
 	var zalgoLines []string
 	for _, line := range blockLines {
-		// Vary intensity: base pulse + random per-line jitter
-		intensity := int(2 + 4*((1+math.Sin(elapsed*3))/2)) // 2-6 range pulsing
-		intensity += s.rng.Intn(3)                       // random jitter 0-2
+		intensity := int(2 + 4*((1+math.Sin(elapsed*3))/2))
+		intensity += s.rng.Intn(3)
 		zalgoLines = append(zalgoLines, zalgoString(line, intensity, s.rng))
 	}
 
-	// Style: green/cyan cyberpunk feel
-	colors := []lipgloss.Color{"2", "14", "2", "14", "2", "14"}
+	// Subtitle
+	dots := int(elapsed*2) % 4
+	subtitle := "terminal agent" + strings.Repeat(".", dots) + strings.Repeat(" ", 3-dots)
 
-	var styledLines []string
-	for i, line := range zalgoLines {
-		color := colors[i%len(colors)]
-		style := lipgloss.NewStyle().
-			Foreground(color).
-			Bold(true)
-		styledLines = append(styledLines, style.Render(line))
+	// Collect all content lines: logo + blank + subtitle
+	var contentLines []string
+	contentLines = append(contentLines, zalgoLines...)
+	contentLines = append(contentLines, "")
+	contentLines = append(contentLines, subtitle)
+
+	// Measure the widest content line (cell width of the raw block text, not zalgo)
+	contentWidth := 0
+	for _, bl := range blockLines {
+		w := lipgloss.Width(bl)
+		if w > contentWidth {
+			contentWidth = w
+		}
+	}
+	subtitleWidth := lipgloss.Width(subtitle)
+	if subtitleWidth > contentWidth {
+		contentWidth = subtitleWidth
+	}
+	contentHeight := len(contentLines)
+
+	// Calculate centered placement
+	startY := (s.height - contentHeight) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	startX := (s.width - contentWidth) / 2
+	if startX < 0 {
+		startX = 0
 	}
 
-	// Add a subtitle
+	// Logo line colors: green/cyan alternating
+	logoColors := []lipgloss.Color{"2", "14", "2", "14", "2", "14"}
+
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).
 		Italic(true)
 
-	// Animate subtitle dots
-	dots := int(elapsed*2) % 4
-	subtitle := "terminal agent" + strings.Repeat(".", dots) + strings.Repeat(" ", 3-dots)
+	// Background noise style — very dim
+	bgStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("236")) // dark gray (near black)
 
-	styledLines = append(styledLines, "")
-	styledLines = append(styledLines, subtitleStyle.Render(subtitle))
+	// Pulsing background intensity: controls zalgo noise density
+	bgPulse := 0.3 + 0.3*((1+math.Sin(elapsed*2))/2) // 0.3–0.6
 
-	// Center everything
-	content := strings.Join(styledLines, "\n")
-	block := lipgloss.NewStyle().
-		Width(s.width).
-		Height(s.height).
-		Align(lipgloss.Center, lipgloss.Center).
-		Render(content)
+	// Build each screen row
+	var screenLines []string
+	for y := 0; y < s.height; y++ {
+		var row strings.Builder
 
-	return block
+		// Check if this row is a content row
+		contentRow := y - startY
+		isContentRow := contentRow >= 0 && contentRow < contentHeight
+
+		if isContentRow {
+			// Render: bg noise left | content | bg noise right
+			// Left noise
+			for x := 0; x < startX; x++ {
+				row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+			}
+
+			// Content
+			line := contentLines[contentRow]
+			if contentRow < len(zalgoLines) {
+				// Logo line — styled with color
+				color := logoColors[contentRow%len(logoColors)]
+				style := lipgloss.NewStyle().
+					Foreground(color).
+					Bold(true)
+				row.WriteString(style.Render(line))
+			} else if contentRow == len(zalgoLines) {
+				// Blank separator — fill with noise
+				for x := 0; x < contentWidth; x++ {
+					row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+				}
+			} else {
+				// Subtitle line — center it within content width
+				subPad := (contentWidth - subtitleWidth) / 2
+				for x := 0; x < subPad; x++ {
+					row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+				}
+				row.WriteString(subtitleStyle.Render(line))
+				for x := 0; x < contentWidth-subtitleWidth-subPad; x++ {
+					row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+				}
+			}
+
+			// Right noise — fill remaining width
+			// The content area is contentWidth cells; figure out remaining
+			rightStart := startX + contentWidth
+			for x := rightStart; x < s.width; x++ {
+				row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+			}
+		} else {
+			// Pure noise row
+			for x := 0; x < s.width; x++ {
+				row.WriteString(s.bgNoiseCell(bgPulse, bgStyle))
+			}
+		}
+
+		screenLines = append(screenLines, row.String())
+	}
+
+	return strings.Join(screenLines, "\n")
+}
+
+// bgNoiseCell generates a single background noise cell — either a space or
+// a dim character with optional subtle zalgo combining marks.
+func (s splashModel) bgNoiseCell(density float64, style lipgloss.Style) string {
+	// Most cells are spaces for a sparse, subtle effect
+	if s.rng.Float64() > density {
+		return " "
+	}
+
+	ch := bgNoiseChars[s.rng.Intn(len(bgNoiseChars))]
+	var b strings.Builder
+	b.WriteRune(ch)
+
+	// Occasionally add a single combining mark for extra glitchiness
+	if s.rng.Float64() < 0.3 {
+		b.WriteRune(zalgoAbove[s.rng.Intn(len(zalgoAbove))])
+	}
+	if s.rng.Float64() < 0.15 {
+		b.WriteRune(zalgoBelow[s.rng.Intn(len(zalgoBelow))])
+	}
+
+	return style.Render(b.String())
 }
