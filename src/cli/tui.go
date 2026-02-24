@@ -718,7 +718,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		case value == "/help":
 			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions"))
-			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
+			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → YOLO → Plan → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
 			s.appendLine(tuiDim.Render("Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"))
