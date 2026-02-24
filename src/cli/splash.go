@@ -184,7 +184,7 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 	case splashTickMsg:
 		s.frame++
 		elapsed := time.Since(s.startTime)
-		if elapsed >= 3000*time.Millisecond {
+		if elapsed >= 2500*time.Millisecond {
 			return s, func() tea.Msg { return splashDoneMsg{} }
 		}
 		return s, splashTick()
@@ -268,8 +268,8 @@ func (s splashModel) View() string {
 		startX = 0
 	}
 
-	// Logo line colors: green/cyan alternating
-	logoColors := []lipgloss.Color{"2", "14", "2", "14", "2", "14"}
+	// Logo line colors: green/yellow alternating
+	logoColors := []lipgloss.Color{"2", "3", "2", "3", "2", "3"}
 
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).

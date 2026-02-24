@@ -846,7 +846,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.appendLine(tuiRenderDiff(inner.name, inner.input))
 		summary := SummarizeConfirm(inner.name, inner.input)
 		s.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", inner.name, summary)))
-		cmds = append(cmds, m.waitForMsg())
+		cmds = append(cmds, bellCmd(), m.waitForMsg())
 
 	case tuiDoneMsg:
 		s.state = tuiStateInput
@@ -858,6 +858,10 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if s.id == m.cur().id {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
+		}
+		// Notify user that the session needs input
+		if !s.isSubAgent {
+			cmds = append(cmds, bellCmd())
 		}
 		// If this is a sub-agent, send result back to parent
 		if s.isSubAgent && s.resultCh != nil {
@@ -1585,6 +1589,12 @@ func overlayLine(baseLine, overlayStr string, totalWidth int) string {
 	}
 
 	return left + overlayStr + rightPad
+}
+
+// bellCmd sends a terminal bell (BEL) to trigger OS-level notification
+// (e.g. dock bounce, tab flash) when the session needs user input.
+func bellCmd() tea.Cmd {
+	return tea.Printf("\a")
 }
 
 func formatTokens(n int) string {
