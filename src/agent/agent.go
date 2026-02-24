@@ -360,3 +360,13 @@ func (a *Agent) Registry() *tools.Registry { return a.registry }
 
 // AllowedTools returns the set of tool names that have been "always allowed" for this session.
 func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }
+
+// AppendHistory injects a user message and an assistant message into the
+// conversation history. This is used by Terminal mode so that shell commands
+// and their output are visible to the agent in subsequent turns.
+func (a *Agent) AppendHistory(userText, assistantText string) {
+	a.messages = append(a.messages,
+		api.UserMessage(userText),
+		api.Message{Role: api.RoleAssistant, Content: []api.ContentBlock{api.TextBlock(assistantText)}},
+	)
+}

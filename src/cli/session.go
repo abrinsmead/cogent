@@ -40,14 +40,12 @@ type session struct {
 
 	// Status bar stats (per-session)
 	contextUsed int
-	cacheRead   int
-	cacheCreate int
-	lastCost    float64
 	totalCost   float64
 
 	// Sub-agent fields
 	parentID   int         // 0 = user-created
 	isSubAgent bool        // true if spawned by dispatch tool
+	done       bool          // true when sub-agent has completed
 	resultCh   chan string // sub-agent sends result here when done
 }
 
@@ -56,7 +54,7 @@ type session struct {
 // with the session ID via sessionMsg.
 func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
-	ta.Placeholder = "Ask anything..."
+	ta.Placeholder = "Ask a question or press Shift+Tab to change modes"
 	ta.Prompt = "❯ "
 	ta.CharLimit = 0
 	ta.SetHeight(1)
@@ -142,10 +140,7 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 	// once the model is fully initialized. The tool checks for nil at execution.
 	s.agent.Registry().RegisterTool(&tools.DispatchTool{})
 
-	s.lines = []string{
-		tuiDim.Render(fmt.Sprintf("cogent — model: %s | cwd: %s", client.Model(), cwd)),
-		"",
-	}
+	s.lines = []string{""}
 
 	return s
 }
@@ -270,12 +265,18 @@ func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.C
 		}
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiRed.Render(fmt.Sprintf("  (exit code %d)", exitErr.ExitCode()))}}
-				return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil}}
+				exitMsg := fmt.Sprintf("(exit code %d)", exitErr.ExitCode())
+				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiRed.Render("  " + exitMsg)}}
+				fullOutput := output
+				if fullOutput != "" {
+					fullOutput += "\n"
+				}
+				fullOutput += exitMsg
+				return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: fullOutput}}
 			}
-			return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: err}}
+			return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: err, command: command, output: output}}
 		}
-		return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil}}
+		return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: output}}
 	}
 }
 
@@ -290,40 +291,33 @@ func (s *session) resize(width, height, chrome int) {
 	s.input.SetWidth(width - 2)
 }
 
+// renderModeBar returns the styled mode label for the mode bar section.
+func (s *session) renderModeBar() string {
+	mode := s.agent.GetPermissionMode()
+	var style lipgloss.Style
+	switch mode {
+	case agent.ModePlan:
+		style = tuiModePlan
+	case agent.ModeYOLO:
+		style = tuiModeYOLO
+	case agent.ModeTerminal:
+		style = tuiModeTerminal
+	default:
+		style = tuiModeConfirm
+	}
+	return style.Render(mode.String())
+}
+
 // renderStatusBar builds the status bar content for this session.
 func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 	sep := tuiStatusBar.Render("  |  ")
 
 	model := tuiStatusKey.Render(client.Model())
 
-	mode := s.agent.GetPermissionMode()
-	var modeStr string
-	switch mode {
-	case agent.ModePlan:
-		modeStr = tuiModePlan.Render("Plan")
-	case agent.ModeYOLO:
-		modeStr = tuiModeYOLO.Render("YOLO")
-	case agent.ModeTerminal:
-		modeStr = tuiModeTerminal.Render("Terminal")
-	default:
-		modeStr = tuiModeConfirm.Render("Confirm")
-	}
-
 	contextTotal := client.ContextWindow()
 	contextStr := tuiStatusValue.Render(fmt.Sprintf("%s/%s",
 		formatTokens(s.contextUsed), formatTokens(contextTotal)))
-	var cacheParts []string
-	if s.cacheRead > 0 {
-		cacheParts = append(cacheParts, tuiGreen.Render(fmt.Sprintf("⚡%s read", formatTokens(s.cacheRead))))
-	}
-	if s.cacheCreate > 0 {
-		cacheParts = append(cacheParts, tuiYellow.Render(fmt.Sprintf("+%s write", formatTokens(s.cacheCreate))))
-	}
-	if len(cacheParts) > 0 {
-		contextStr += tuiStatusBar.Render(" (") + strings.Join(cacheParts, tuiStatusBar.Render(", ")) + tuiStatusBar.Render(")")
-	}
 
-	lastCostStr := tuiStatusValue.Render(formatCost(s.lastCost))
 	totalCostStr := tuiStatusValue.Render(formatCost(s.totalCost))
 
 	pwd := shortenPath(cwd)
@@ -332,12 +326,10 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 	gitStr := renderGitStatus(cwd)
 
 	left := tuiStatusBar.Render(" ") +
-		model + sep +
-		modeStr + tuiStatusBar.Render(" (shift+tab)") + sep +
+		tuiStatusBar.Render("mod ") + model + sep +
 		tuiStatusBar.Render("ctx ") + contextStr + sep +
-		tuiStatusBar.Render("last ") + lastCostStr +
-		tuiStatusBar.Render(" total ") + totalCostStr + sep +
-		pwdStr
+		tuiStatusBar.Render("usd ") + totalCostStr + sep +
+		tuiStatusBar.Render("pwd ") + pwdStr
 
 	if gitStr != "" {
 		left += sep + gitStr
@@ -346,4 +338,47 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 	left += tuiStatusBar.Render(" ")
 
 	return left
+}
+
+// renderHUD builds the floating HUD lines for the top-right overlay.
+// Returns styled lines (without the border) — the caller wraps them in the overlay.
+func (s *session) renderHUD(client *api.Client, cwd string) []string {
+	dim := tuiDim
+	key := tuiStatusKey
+	val := tuiStatusValue
+
+	model := key.Render(client.Model())
+	contextTotal := client.ContextWindow()
+	contextPct := 0
+	if contextTotal > 0 {
+		contextPct = s.contextUsed * 100 / contextTotal
+	}
+
+	// Context stats: used/total (pct%)
+	var ctxColor lipgloss.Style
+	switch {
+	case contextPct >= 80:
+		ctxColor = tuiRed
+	case contextPct >= 50:
+		ctxColor = tuiYellow
+	default:
+		ctxColor = tuiGreen
+	}
+	contextLine := dim.Render("ctx ") + ctxColor.Render(fmt.Sprintf("%s/%s (%d%%)",
+		formatTokens(s.contextUsed), formatTokens(contextTotal), contextPct))
+
+	costLine := dim.Render("usd ") + val.Render(formatCost(s.totalCost))
+	modelLine := dim.Render("mod ") + model
+
+	pwd := shortenPath(cwd)
+	pwdLine := dim.Render("pwd ") + val.Render(pwd)
+
+	lines := []string{modelLine, contextLine, costLine, pwdLine}
+
+	gitStr := renderGitStatus(cwd)
+	if gitStr != "" {
+		lines = append(lines, gitStr)
+	}
+
+	return lines
 }

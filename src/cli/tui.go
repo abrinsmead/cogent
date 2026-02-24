@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
@@ -59,19 +60,27 @@ var (
 
 	tuiModePlan = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("4")) // blue
+			Padding(0, 1).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("4")) // white on blue
 
 	tuiModeConfirm = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("2")) // green
+			Padding(0, 1).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("2")) // black on green
 
 	tuiModeYOLO = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("1")) // red
+			Padding(0, 1).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("1")) // white on red
 
 	tuiModeTerminal = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("3")) // yellow
+				Padding(0, 1).
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("3")) // black on yellow
 
 	// Tab bar styles
 	tuiTabActive = lipgloss.NewStyle().
@@ -129,7 +138,11 @@ func (t *TUI) Run() error {
 
 type tuiAppendMsg struct{ text string }
 type tuiDoneMsg struct{ err error }
-type tuiShellDoneMsg struct{ err error }
+type tuiShellDoneMsg struct {
+	err     error
+	command string // the command that was run
+	output  string // combined stdout+stderr
+}
 type tuiUsageMsg struct{ usage api.Usage }
 type tuiInitialPromptMsg struct{}
 type tuiCompactionMsg struct{}
@@ -168,6 +181,14 @@ const (
 	tuiStateConfirm
 )
 
+type hudMode int
+
+const (
+	hudStatusBar hudMode = iota // bottom status bar (default)
+	hudOverlay                  // floating top-right overlay
+	hudOff                      // no HUD
+)
+
 const maxInputHeight = 10 // max lines the input area can grow to
 
 type tuiModel struct {
@@ -183,6 +204,8 @@ type tuiModel struct {
 	quitting       bool
 	tabFocused     bool // true when the tab bar has focus (arrows navigate tabs)
 	newTabFocused  bool // true when the "+ New Session" button is focused in tab bar
+	tabScroll      int  // index of the first visible tab (for horizontal scrolling)
+	hudMode        hudMode // cycles: StatusBar → Overlay → Off
 	msgCh          chan tea.Msg
 	initialPrompt  string // if set, sent automatically on Init
 }
@@ -292,6 +315,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeAll()
+		m.scrollTabsToActive()
 		for _, s := range m.sessions {
 			s.refreshContent()
 		}
@@ -315,7 +339,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tuiSubAgentDoneMsg:
 		s := m.sessionByID(msg.sessionID)
 		if s != nil && s.isSubAgent {
-			s.name = "✓ " + s.name
+			s.done = true
 		}
 		cmds = append(cmds, m.waitForMsg())
 	}
@@ -346,6 +370,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ns := m.createSession()
 		m.active = len(m.sessions) - 1
 		m.resizeAll()
+		m.scrollTabsToActive()
 		ns.input.Focus()
 		return m, textarea.Blink
 
@@ -367,6 +392,15 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Ctrl+H — cycle HUD display mode
+	if msg.String() == "ctrl+h" {
+		m.hudMode = (m.hudMode + 1) % 3
+		labels := []string{"status bar", "overlay", "off"}
+		s.appendLine(tuiDim.Render("  HUD → " + labels[m.hudMode]))
+		m.resizeAll()
+		return m, nil
+	}
+
 	// Tab bar focused — arrow keys navigate tabs
 	if m.tabFocused {
 		switch msg.Type {
@@ -380,11 +414,13 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				// Move focus to the "+ New Session" button
 				m.newTabFocused = true
+				m.scrollTabsToActive()
 			}
 			return m, nil
 		case tea.KeyLeft:
 			if m.newTabFocused {
 				m.newTabFocused = false
+				m.scrollTabsToActive()
 				return m, nil
 			}
 			if m.active > 0 {
@@ -399,6 +435,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				ns := m.createSession()
 				m.active = len(m.sessions) - 1
 				m.resizeAll()
+				m.scrollTabsToActive()
 				ns.input.Focus()
 				return m, textarea.Blink
 			}
@@ -485,10 +522,10 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			if newMode == agent.ModeTerminal {
 				s.input.Prompt = "$ "
-				s.input.Placeholder = "Run a command..."
+				s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
 			} else {
 				s.input.Prompt = "❯ "
-				s.input.Placeholder = "Ask anything..."
+				s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
 			}
 			s.appendLine(tuiDim.Render("  mode → ") + style.Render(newMode.String()))
 			return m, nil
@@ -566,19 +603,21 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					status = "running"
 				} else if sess.state == tuiStateConfirm {
 					status = "needs confirmation"
+				} else if sess.isSubAgent && sess.done {
+					status = "done"
 				}
-				prefix := ""
+				label := sess.name
 				if sess.isSubAgent {
-					prefix = "⤵ "
+					label = "(sub-agent) " + label
 				}
-				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s%s (%s)", marker, i+1, prefix, sess.name, status)))
+				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s (%s)", marker, i+1, label, status)))
 			}
 			return m, nil
 
 		case value == "/help":
 			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions"))
 			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
-			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session"))
+			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
 			s.appendLine(tuiDim.Render("Alt+1..9: jump to session by number"))
 			s.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"))
@@ -680,10 +719,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 
 	case tuiUsageMsg:
 		s.contextUsed = inner.usage.ContextUsed()
-		s.cacheRead = inner.usage.CacheReadInputTokens
-		s.cacheCreate = inner.usage.CacheCreationInputTokens
 		cost := m.client.CostForUsage(inner.usage)
-		s.lastCost = cost
 		s.totalCost += cost
 		cmds = append(cmds, m.waitForMsg())
 
@@ -723,6 +759,19 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if inner.err != nil {
 			s.appendLine(tuiRed.Render("Error: " + inner.err.Error()))
 		}
+		// Add terminal command and output to conversation history so the
+		// agent can see what was run when the user switches back.
+		if inner.command != "" {
+			userText := fmt.Sprintf("[Terminal mode] $ %s", inner.command)
+			assistantText := inner.output
+			if assistantText == "" {
+				assistantText = "(no output)"
+			}
+			if inner.err != nil {
+				assistantText += "\nError: " + inner.err.Error()
+			}
+			s.agent.AppendHistory(userText, assistantText)
+		}
 		s.appendLine("")
 		if s.id == m.cur().id {
 			s.input.Focus()
@@ -748,7 +797,7 @@ func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
 	if len(name) > 24 {
 		name = name[:24] + "…"
 	}
-	child.name = "⤵ " + name
+	child.name = name
 	child.nameSet = true
 
 	// Inherit permission mode from parent
@@ -758,6 +807,7 @@ func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.resizeAll()
+	m.scrollTabsToActive()
 
 	// Start the sub-agent — runs in background
 	child.appendLine(tuiPrompt.Render("❯ " + msg.task))
@@ -781,6 +831,7 @@ func (m *tuiModel) switchToSession(idx int) {
 		s.input.Focus()
 	}
 	m.resizeAll()
+	m.scrollTabsToActive()
 }
 
 // closeCurrentSession closes the active session tab.
@@ -803,6 +854,7 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 		m.active = len(m.sessions) - 1
 	}
 	m.resizeAll()
+	m.scrollTabsToActive()
 	ns := m.cur()
 	if ns.state == tuiStateInput {
 		ns.input.Focus()
@@ -825,8 +877,17 @@ func (m tuiModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(s.output.View())
-	b.WriteString("\n")
+
+	// Overlay HUD on the viewport output
+	viewportContent := s.output.View()
+	if m.hudMode == hudOverlay {
+		hudLines := s.renderHUD(m.client, m.cwd)
+		if len(hudLines) > 0 {
+			viewportContent = overlayHUD(viewportContent, hudLines, m.width)
+		}
+	}
+	b.WriteString(viewportContent)
+	b.WriteString("\n\n")
 
 	// Build the prompt content
 	var promptContent string
@@ -849,36 +910,68 @@ func (m tuiModel) View() string {
 	// Build tab bar content (merged border + label/bottom rows)
 	mergedBorder, tabRows := m.renderTabBar(innerWidth)
 
-	// Draw box around prompt + status bar
+	// Draw prompt box (full width) with mode prefix and right-justified hint
 	topBorder := tuiBorder.Render("╭" + strings.Repeat("─", innerWidth) + "╮")
 	midBorder := tuiBorder.Render("├" + strings.Repeat("─", innerWidth) + "┤")
 	leftEdge := tuiBorder.Render("│")
 	rightEdge := tuiBorder.Render("│")
 
+	// Mode tag as prompt prefix, hint right-justified
+	modeTag := " " + s.renderModeBar() + " "
+	modeTagWidth := lipgloss.Width(modeTag)
+	hint := tuiDim.Render("(shift + tab to change mode) ")
+	hintWidth := lipgloss.Width(hint)
+
 	b.WriteString(topBorder)
 	b.WriteString("\n")
 
-	// Render prompt lines
+	// Render prompt lines with mode prefix on first line, hint right-justified
 	promptLines := strings.Split(promptContent, "\n")
-	for _, pl := range promptLines {
+	for i, pl := range promptLines {
 		plWidth := lipgloss.Width(pl)
-		if plWidth < innerWidth {
-			pl += strings.Repeat(" ", innerWidth-plWidth)
+		if i == 0 {
+			// Prefix the mode tag, then prompt content, then right-justify hint
+			prefixed := modeTag + pl
+			prefixedWidth := modeTagWidth + plWidth
+			availForHint := innerWidth - prefixedWidth
+			if availForHint >= hintWidth {
+				gap := availForHint - hintWidth
+				pl = prefixed + strings.Repeat(" ", gap) + hint
+			} else {
+				// Not enough room for hint — just pad
+				if prefixedWidth < innerWidth {
+					pl = prefixed + strings.Repeat(" ", innerWidth-prefixedWidth)
+				} else {
+					pl = ansi.Truncate(prefixed, innerWidth, "")
+				}
+			}
+		} else if plWidth < innerWidth {
+			// Indent continuation lines to align with content after mode tag
+			indent := strings.Repeat(" ", modeTagWidth)
+			pl = indent + pl
+			plWidth = lipgloss.Width(pl)
+			if plWidth < innerWidth {
+				pl += strings.Repeat(" ", innerWidth-plWidth)
+			}
 		}
 		b.WriteString(leftEdge + pl + rightEdge)
 		b.WriteString("\n")
 	}
-	b.WriteString(midBorder)
-	b.WriteString("\n")
 
-	// Pad status bar to fill the box
-	statusWidth := lipgloss.Width(statusContent)
-	if statusWidth < innerWidth {
-		statusContent += tuiStatusBar.Render(strings.Repeat(" ", innerWidth-statusWidth))
+	// Status bar: mid border + status line (only in StatusBar mode)
+	if m.hudMode == hudStatusBar {
+		b.WriteString(midBorder)
+		b.WriteString("\n")
+
+		// Pad status bar to fill the box
+		statusWidth := lipgloss.Width(statusContent)
+		if statusWidth < innerWidth {
+			statusContent += tuiStatusBar.Render(strings.Repeat(" ", innerWidth-statusWidth))
+		}
+
+		b.WriteString(leftEdge + statusContent + rightEdge)
+		b.WriteString("\n")
 	}
-
-	b.WriteString(leftEdge + statusContent + rightEdge)
-	b.WriteString("\n")
 
 	// Merged border: box bottom + tab tops combined
 	b.WriteString(mergedBorder)
@@ -890,27 +983,87 @@ func (m tuiModel) View() string {
 	return b.String()
 }
 
-// renderTabBar builds the tab bar that connects to the status box bottom border.
-// Returns (mergedBorder, tabRows) where mergedBorder replaces the box's bottom
-// border and incorporates the tab top edges, and tabRows has the label + bottom rows.
-func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
-	type tabInfo struct {
-		label string
-		style lipgloss.Style
-		width int // rendered cell width of " label "
+// ensureActiveTabVisible adjusts tabScroll so the active tab (or the new-tab
+// button when newTabFocused) is within the visible range for the given width.
+func (m *tuiModel) ensureActiveTabVisible(boxWidth int) {
+	allTabs := m.buildTabInfos()
+
+	// Which index should be visible?
+	target := m.active
+	if m.newTabFocused {
+		target = len(allTabs) - 1 // the "+ New" button is last
 	}
 
+	// Clamp tabScroll lower bound
+	if m.tabScroll > target {
+		m.tabScroll = target
+	}
+	if m.tabScroll < 0 {
+		m.tabScroll = 0
+	}
+
+	// Available width for tab content (1 char leading space, and we reserve
+	// 3 chars per arrow indicator: " ◀ " / " ▶ ").
+	avail := boxWidth
+	hasLeft := m.tabScroll > 0
+
+	// Grow the visible window from tabScroll until we run out of space.
+	// Each tab costs: width (content) + 1 (shared border), except the first
+	// visible tab which also has its own left border (+1 more = width + 2).
+	for {
+		used := 0
+		if hasLeft {
+			used += 3 // " ◀ " left arrow
+		}
+		visEnd := m.tabScroll
+		for i := m.tabScroll; i < len(allTabs); i++ {
+			extra := allTabs[i].width + 1 // content + shared right border
+			if i == m.tabScroll {
+				extra++ // left border for first visible tab
+			}
+			if used+extra > avail {
+				break
+			}
+			used += extra
+			visEnd = i + 1
+		}
+		// If there are hidden tabs after the visible range, the right arrow
+		// indicator (" ▶ ") needs space. Drop the last visible tab if needed.
+		if visEnd < len(allTabs) {
+			for used+3 > avail && visEnd > m.tabScroll+1 {
+				visEnd--
+				extra := allTabs[visEnd].width + 1
+				used -= extra
+			}
+		}
+
+		if target < visEnd {
+			break // target is visible
+		}
+		// Scroll right to reveal the target
+		m.tabScroll++
+		hasLeft = true
+		if m.tabScroll >= len(allTabs) {
+			m.tabScroll = len(allTabs) - 1
+			break
+		}
+	}
+}
+
+// tabInfo holds pre-computed data for a single tab in the bar.
+type tabInfo struct {
+	label string
+	dot   string // pre-rendered status dot (foreground only, no background)
+	style lipgloss.Style
+	width int // rendered cell width of " dot label "
+}
+
+// buildTabInfos creates the full list of tabInfo (sessions + new-tab button).
+func (m tuiModel) buildTabInfos() []tabInfo {
 	var tabs []tabInfo
 
 	for i, s := range m.sessions {
 		label := s.name
-
-		// Add status suffixes
-		if s.state == tuiStateRunning {
-			label += " ⟳"
-		} else if s.state == tuiStateConfirm {
-			label += " ⚠"
-		}
 
 		var style lipgloss.Style
 		if i == m.active {
@@ -919,7 +1072,7 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 			} else {
 				style = tuiTabActive
 			}
-		} else if s.isSubAgent && s.state == tuiStateInput && strings.HasPrefix(s.name, "✓") {
+		} else if s.isSubAgent && s.done {
 			style = tuiTabDone
 		} else if s.state == tuiStateConfirm {
 			style = tuiTabNeedsAttention
@@ -931,8 +1084,25 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 			style = tuiTabInactive
 		}
 
-		w := lipgloss.Width(style.Render(" " + label + " "))
-		tabs = append(tabs, tabInfo{label: label, style: style, width: w})
+		var dotColor lipgloss.TerminalColor
+		if s.state == tuiStateConfirm {
+			dotColor = lipgloss.Color("1")
+		} else if s.isSubAgent && s.done {
+			dotColor = lipgloss.Color("2")
+		} else if s.isSubAgent && s.state == tuiStateRunning {
+			dotColor = lipgloss.Color("4")
+		} else if s.state == tuiStateRunning {
+			dotColor = lipgloss.Color("3")
+		}
+		dot := ""
+		if dotColor != nil {
+			dotStyle := lipgloss.NewStyle().Foreground(dotColor)
+			dot = dotStyle.Render("●") + " "
+		}
+
+		// Width measures content between │ borders: " " + dot + style(" label ")
+		w := lipgloss.Width(" " + dot + style.Render(label+" "))
+		tabs = append(tabs, tabInfo{label: label, dot: dot, style: style, width: w})
 	}
 
 	// New session button
@@ -952,21 +1122,65 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 		newLabel = "+"
 		newStyle = tuiTabNew
 	}
-	nw := lipgloss.Width(newStyle.Render(" " + newLabel + " "))
+	nw := lipgloss.Width(" " + newStyle.Render(newLabel+" "))
 	tabs = append(tabs, tabInfo{label: newLabel, style: newStyle, width: nw})
 
-	// Build the merged border line: combines box bottom with tab tops.
-	// Layout: ╰─┬───────┬───┬─...─╯
-	// The tabs start at offset 1 (matching the " " prefix in tab rows).
-	// Adjacent tabs share their border character (│ between tabs).
-	// Each tab occupies width + 1 cells (content + shared right border),
-	// except the first which also has its own left border (+1 more).
+	return tabs
+}
 
-	// Position 0 = ╰ (left corner of box)
-	// Then boxWidth chars of ─ (positions 1..boxWidth)
-	// Position boxWidth+1 = ╯ (right corner of box)
-	// Total merged line width = boxWidth + 2
+// renderTabBar builds the tab bar that connects to the status box bottom border.
+// Returns (mergedBorder, tabRows) where mergedBorder replaces the box's bottom
+// border and incorporates the tab top edges, and tabRows has the label + bottom rows.
+// Tabs are scrollable — only a visible window is rendered, with ◀/▶ arrows.
+func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
+	allTabs := m.buildTabInfos()
 
+	// Determine visible range based on tabScroll and available width.
+	avail := boxWidth
+	hasLeftArrow := m.tabScroll > 0
+	if hasLeftArrow {
+		avail -= 3 // " ◀ "
+	}
+
+	// Walk from tabScroll forward, fitting as many tabs as possible.
+	visStart := m.tabScroll
+	visEnd := visStart
+	used := 0
+	for i := visStart; i < len(allTabs); i++ {
+		extra := allTabs[i].width + 1 // content + shared right border
+		if i == visStart {
+			extra++ // left border for first visible tab
+		}
+		if used+extra > avail {
+			break
+		}
+		used += extra
+		visEnd = i + 1
+	}
+
+	hasRightArrow := visEnd < len(allTabs)
+
+	// If adding the right arrow steals space and we need to drop the last tab, do so.
+	if hasRightArrow {
+		for used+3 > avail && visEnd > visStart+1 {
+			visEnd--
+			extra := allTabs[visEnd].width + 1
+			used -= extra
+		}
+	}
+
+	// Always show at least one tab, even if it overflows.
+	if visEnd <= visStart && visStart < len(allTabs) {
+		visEnd = visStart + 1
+	}
+
+	// If left arrow appeared after we initially didn't account for it, recheck.
+	// (tabScroll > 0 was handled above, so this is just a safety net.)
+
+	visTabs := allTabs[visStart:visEnd]
+
+	// ── Build the merged border line ──────────────────────────────────────
+	// Position 0 = ╰, positions 1..boxWidth = ─, position boxWidth+1 = ╯
 	totalWidth := boxWidth + 2
 	border := make([]rune, totalWidth)
 	for i := range border {
@@ -975,66 +1189,79 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	border[0] = '╰'
 	border[totalWidth-1] = '╯'
 
-	// Place tab wall positions on the border using ┬.
-	// Adjacent tabs share their border: right edge of tab N = left edge of tab N+1.
+	// Calculate starting position for tabs on the border
 	pos := 1 // leading space offset
-	for i, t := range tabs {
+	if hasLeftArrow {
+		pos += 3 // " ◀ "
+	}
+
+	for i, t := range visTabs {
 		leftEdge := pos
-		rightEdge := pos + t.width + 1 // +1 for the right border char
+		rightEdge := pos + t.width + 1
 		if leftEdge > 0 && leftEdge < totalWidth-1 {
 			border[leftEdge] = '┬'
 		}
 		if rightEdge > 0 && rightEdge < totalWidth-1 {
 			border[rightEdge] = '┬'
 		}
-		if i < len(tabs)-1 {
-			pos = rightEdge // shared border: next tab's left edge = this tab's right edge
+		if i < len(visTabs)-1 {
+			pos = rightEdge
 		}
 	}
 
-	// Fix: if the last tab's right edge is beyond box, don't corrupt
-	// Also handle the special corner cases:
-	// - If a tab edge lands on position 0, use ╰ still (it won't, pos starts at 1)
-	// - If a tab edge lands on the last position, use ╯ still
 	border[0] = '╰'
 	border[totalWidth-1] = '╯'
-
 	mergedBorder := tuiBorder.Render(string(border))
 
-	// Build label row and bottom row
-	// Adjacent tabs share their border character (│ between, ╰╯ merged to ╨).
+	// ── Build label row and bottom row ────────────────────────────────────
 	var midBuf, botBuf strings.Builder
+
+	// Left arrow indicator
+	if hasLeftArrow {
+		midBuf.WriteString(tuiDim.Render(" ◀ "))
+		botBuf.WriteString(tuiDim.Render("   "))
+	}
+
 	midBuf.WriteString(" ")
 	botBuf.WriteString(" ")
-	for i, t := range tabs {
-		if i == 0 {
-			midBuf.WriteString(tuiBorder.Render("│"))
-		} else {
-			// shared border with previous tab
-			midBuf.WriteString(tuiBorder.Render("│"))
-		}
-		midBuf.WriteString(t.style.Render(" " + t.label + " "))
-		if i == len(tabs)-1 {
+
+	for i, t := range visTabs {
+		midBuf.WriteString(tuiBorder.Render("│"))
+		midBuf.WriteString(" " + t.dot + t.style.Render(t.label+" "))
+		if i == len(visTabs)-1 {
 			midBuf.WriteString(tuiBorder.Render("│"))
 		}
 
 		if i == 0 {
 			botBuf.WriteString(tuiBorder.Render("╰"))
 		} else {
-			botBuf.WriteString(tuiBorder.Render("╨"))
+			botBuf.WriteString(tuiBorder.Render("┴"))
 		}
 		botBuf.WriteString(tuiBorder.Render(strings.Repeat("─", t.width)))
-		if i == len(tabs)-1 {
+		if i == len(visTabs)-1 {
 			botBuf.WriteString(tuiBorder.Render("╯"))
 		}
+	}
+
+	// Right arrow indicator
+	if hasRightArrow {
+		midBuf.WriteString(tuiDim.Render(" ▶ "))
+		botBuf.WriteString(tuiDim.Render("   "))
 	}
 
 	midRow := midBuf.String()
 	botRow := botBuf.String()
 
 	if m.tabFocused {
-		hint := tuiDim.Render("  ←/→ navigate  enter select  esc return")
-		midRow += hint
+		hint := "  ←/→ navigate  enter select  esc return"
+		midRowWidth := lipgloss.Width(midRow)
+		remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
+		if remaining >= 4 {
+			if len(hint) > remaining {
+				hint = hint[:remaining]
+			}
+			midRow += tuiDim.Render(hint)
+		}
 	}
 
 	return mergedBorder, midRow + "\n" + botRow
@@ -1042,19 +1269,32 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
 
+// scrollTabsToActive ensures the active tab (or new-tab button) is visible.
+func (m *tuiModel) scrollTabsToActive() {
+	innerWidth := m.width - 2
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	m.ensureActiveTabVisible(innerWidth)
+}
+
 // resizeAll updates the layout for the active session based on current terminal size.
 func (m *tuiModel) resizeAll() {
 	s := m.cur()
 	// Layout (rows below the viewport):
-	//   1  top border       ╭───╮
-	//   N  input lines      │...│  (dynamic, 1..maxInputHeight)
-	//   1  mid border       ├───┤
-	//   1  status line      │...│
-	//   1  merged border    ╰─┤..├─╯  (box bottom + tab tops)
-	//   2  tab rows         │..│ │..│
-	//                       ╰──╯ ╰──╯
-	//   = 6 + N
-	chrome := 6 + s.inputHeight
+	//   1  blank line
+	//   1  top border         ╭───╮
+	//   N  input lines        │...│  (dynamic, 1..maxInputHeight) — mode right-justified
+	//   1  mid border         ├───┤    (only if hudMode == hudStatusBar)
+	//   1  status line        │...│    (only if hudMode == hudStatusBar)
+	//   1  merged border      ╰─┤..├─╯  (box bottom + tab tops)
+	//   2  tab rows           │..│ │..│
+	//                         ╰──╯ ╰──╯
+	//   = 7 + N (with status bar) or 5 + N (without)
+	chrome := 7 + s.inputHeight
+	if m.hudMode != hudStatusBar {
+		chrome -= 2 // no mid border + status row
+	}
 	s.resize(m.width, m.height, chrome)
 }
 
@@ -1090,9 +1330,9 @@ func renderGitStatus(cwd string) string {
 	}
 	dirty := gitDirty(cwd)
 	if dirty {
-		return tuiStatusGitDirty.Render(" " + branch + "*")
+		return tuiStatusBar.Render("git ") + tuiStatusGitDirty.Render(branch + "*")
 	}
-	return tuiStatusGitClean.Render(" " + branch)
+	return tuiStatusBar.Render("git ") + tuiStatusGitClean.Render(branch)
 }
 
 func gitBranch(dir string) string {
@@ -1140,6 +1380,93 @@ func findGitDir(dir string) string {
 
 // ─── Formatting helpers ────────────────────────────────────────────────────
 
+// overlayHUD composites a small HUD box onto the top-right of the viewport output.
+// viewportStr is the full viewport render, hudLines are the content lines,
+// and totalWidth is the terminal width.
+func overlayHUD(viewportStr string, hudLines []string, totalWidth int) string {
+	if len(hudLines) == 0 || totalWidth < 20 {
+		return viewportStr
+	}
+
+	// Compute max content width of HUD lines
+	maxW := 0
+	for _, l := range hudLines {
+		w := lipgloss.Width(l)
+		if w > maxW {
+			maxW = w
+		}
+	}
+
+	boxInner := maxW + 2 // 1 padding each side
+	boxOuter := boxInner + 2 // +2 for border chars │ │
+
+	if boxOuter > totalWidth-4 {
+		return viewportStr // not enough room
+	}
+
+	// Build the HUD box lines (border + content)
+	var box []string
+	box = append(box, tuiDim.Render("╭"+strings.Repeat("─", boxInner)+"╮"))
+	for _, l := range hudLines {
+		w := lipgloss.Width(l)
+		pad := boxInner - 1 - w // 1 char left pad already
+		if pad < 0 {
+			pad = 0
+		}
+		box = append(box, tuiDim.Render("│")+" "+l+strings.Repeat(" ", pad)+tuiDim.Render("│"))
+	}
+	box = append(box, tuiDim.Render("╰"+strings.Repeat("─", boxInner)+"╯"))
+
+	// Split viewport into lines and overlay box onto top-right
+	vpLines := strings.Split(viewportStr, "\n")
+
+	// Start at line 0, right-aligned with 1 char margin from right edge
+	for i, boxLine := range box {
+		if i >= len(vpLines) {
+			break
+		}
+		vpLines[i] = overlayLine(vpLines[i], boxLine, totalWidth)
+	}
+
+	return strings.Join(vpLines, "\n")
+}
+
+// overlayLine places overlayStr at the right side of baseLine, replacing characters.
+func overlayLine(baseLine, overlayStr string, totalWidth int) string {
+	overlayW := lipgloss.Width(overlayStr)
+	baseW := lipgloss.Width(baseLine)
+
+	// Position: right-aligned with 1 char margin
+	startCol := totalWidth - overlayW - 1
+	if startCol < 0 {
+		startCol = 0
+	}
+
+	// Pad base line to full width if needed
+	if baseW < totalWidth {
+		baseLine += strings.Repeat(" ", totalWidth-baseW)
+	}
+
+	// We need to do a character-level splice. Since ANSI sequences complicate
+	// things, use ansi.Truncate to get the left portion, then append overlay + right pad.
+	left := ansi.Truncate(baseLine, startCol, "")
+	leftW := lipgloss.Width(left)
+
+	// Pad left to exact start column if truncation fell short
+	if leftW < startCol {
+		left += strings.Repeat(" ", startCol-leftW)
+	}
+
+	// After the overlay, pad to total width
+	rightStart := startCol + overlayW
+	rightPad := ""
+	if rightStart < totalWidth {
+		rightPad = strings.Repeat(" ", totalWidth-rightStart)
+	}
+
+	return left + overlayStr + rightPad
+}
+
 func formatTokens(n int) string {
 	if n >= 1_000_000 {
 		return fmt.Sprintf("%.1fM", float64(n)/1e6)
@@ -1151,9 +1478,6 @@ func formatTokens(n int) string {
 }
 
 func formatCost(c float64) string {
-	if c < 0.01 {
-		return fmt.Sprintf("$%.4f", c)
-	}
 	return fmt.Sprintf("$%.2f", c)
 }
 
