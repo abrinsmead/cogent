@@ -15,6 +15,14 @@ type Tool interface {
 	RequiresConfirmation() bool
 }
 
+// ConcurrentTool is an optional interface for tools that can safely execute
+// in parallel with other tools in the same response. When the API returns
+// multiple tool_use blocks and some implement ConcurrentTool, those tools
+// run simultaneously rather than sequentially.
+type ConcurrentTool interface {
+	IsConcurrent() bool
+}
+
 type Registry struct {
 	tools    map[string]Tool
 	warnings []string // warnings from custom tool loading

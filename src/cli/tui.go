@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -228,6 +229,11 @@ func (m *tuiModel) cur() *session {
 	return m.sessions[m.active]
 }
 
+// setWindowTitle updates the terminal window title to the active session's name.
+func (m *tuiModel) setWindowTitle() {
+	os.Stderr.Write([]byte("\x1b]2;cogent — " + m.cur().name + "\x1b\\"))
+}
+
 // sessionByID finds a session by its ID. Returns nil if not found.
 func (m *tuiModel) sessionByID(id int) *session {
 	for _, s := range m.sessions {
@@ -259,6 +265,7 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		initialPrompt: prompt,
 		nextID:        0,
 		splash:        &splash,
+		hudMode:        loadHUDMode(cwd),
 	}
 
 	// Create the initial default session
@@ -306,6 +313,7 @@ func (m *tuiModel) createSession() *session {
 }
 
 func (m tuiModel) Init() tea.Cmd {
+	m.setWindowTitle()
 	cmds := []tea.Cmd{m.waitForMsg()}
 	if m.splash != nil {
 		cmds = append(cmds, m.splash.Init())
@@ -426,6 +434,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := m.cur()
 		s.appendLine(tuiPrompt.Render("❯ " + prompt))
 		s.autoName(prompt)
+		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
 		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick())
@@ -484,6 +493,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.active = len(m.sessions) - 1
 		m.resizeAll()
 		m.scrollTabsToActive()
+		m.setWindowTitle()
 		ns.input.Focus()
 		return m, textarea.Blink
 
@@ -511,6 +521,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		labels := []string{"status bar", "overlay", "off"}
 		s.appendLine(tuiDim.Render("  HUD → " + labels[m.hudMode]))
 		m.resizeAll()
+		saveHUDMode(m.cwd, m.hudMode)
 		return m, nil
 	}
 
@@ -734,6 +745,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if newName != "" {
 				s.name = newName
 				s.nameSet = true
+				m.setWindowTitle()
 				s.appendLine(tuiDim.Render(fmt.Sprintf("Session renamed to %q.", newName)))
 			}
 			return m, nil
@@ -783,6 +795,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		s.appendLine(tuiPrompt.Render("❯ " + value))
 		s.autoName(value)
+		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
 		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick())
@@ -890,7 +903,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.appendLine(tuiRenderDiff(inner.name, inner.input))
 		summary := SummarizeConfirm(inner.name, inner.input)
 		s.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", inner.name, summary)))
-		cmds = append(cmds, bellCmd(), m.waitForMsg())
+		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
 	case tuiDoneMsg:
 		s.state = tuiStateInput
@@ -905,7 +918,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		}
 		// Notify user that the session needs input
 		if !s.isSubAgent {
-			cmds = append(cmds, bellCmd())
+			cmds = append(cmds, notifyCmd(s.name+" is done"))
 		}
 		// If this is a sub-agent, send result back to parent
 		if s.isSubAgent && s.resultCh != nil {
@@ -993,6 +1006,7 @@ func (m *tuiModel) switchToSession(idx int) {
 	}
 	m.resizeAll()
 	m.scrollTabsToActive()
+	m.setWindowTitle()
 }
 
 // closeCurrentSession closes the active session tab.
@@ -1016,6 +1030,7 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	}
 	m.resizeAll()
 	m.scrollTabsToActive()
+	m.setWindowTitle()
 	ns := m.cur()
 	if ns.state == tuiStateInput {
 		ns.input.Focus()
@@ -1636,10 +1651,15 @@ func overlayLine(baseLine, overlayStr string, totalWidth int) string {
 	return left + overlayStr + rightPad
 }
 
-// bellCmd sends a terminal bell (BEL) to trigger OS-level notification
-// (e.g. dock bounce, tab flash) when the session needs user input.
-func bellCmd() tea.Cmd {
-	return tea.Printf("\a")
+// notifyCmd sends a desktop notification via OSC 9 and a terminal bell.
+// OSC 9 shows a native notification (supported by iTerm2, Ghostty, etc.);
+// the bell triggers fallback alerts (e.g. dock bounce, tab flash).
+// Both written directly to stderr to work in alt-screen mode.
+func notifyCmd(title string) tea.Cmd {
+	return func() tea.Msg {
+		os.Stderr.Write([]byte("\x1b]9;" + title + "\x1b\\\a"))
+		return nil
+	}
 }
 
 func formatTokens(n int) string {
@@ -1662,4 +1682,73 @@ func shortenPath(p string) string {
 		p = "~" + p[len(home):]
 	}
 	return p
+}
+
+// ─── Settings persistence ───────────────────────────────────────────────────
+
+// settingsPath returns the path to .cogent/settings in the given directory.
+func settingsPath(cwd string) string {
+	return filepath.Join(cwd, ".cogent", "settings")
+}
+
+// loadSettings reads the .cogent/settings file and returns a key→value map.
+func loadSettings(cwd string) map[string]string {
+	m := make(map[string]string)
+	data, err := os.ReadFile(settingsPath(cwd))
+	if err != nil {
+		return m
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		m[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return m
+}
+
+// saveSetting writes a single key=value into .cogent/settings, updating an
+// existing key or appending a new one.
+func saveSetting(cwd, key, value string) {
+	path := settingsPath(cwd)
+	settings := loadSettings(cwd)
+	settings[key] = value
+
+	var lines []string
+	for k, v := range settings {
+		lines = append(lines, k+"="+v)
+	}
+	// sort for deterministic output
+	sort.Strings(lines)
+
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+// loadHUDMode reads the saved HUD mode from .cogent/settings.
+func loadHUDMode(cwd string) hudMode {
+	s := loadSettings(cwd)
+	switch s["hud"] {
+	case "overlay":
+		return hudOverlay
+	case "off":
+		return hudOff
+	default:
+		return hudStatusBar
+	}
+}
+
+// saveHUDMode persists the current HUD mode to .cogent/settings.
+func saveHUDMode(cwd string, mode hudMode) {
+	labels := map[hudMode]string{
+		hudStatusBar: "status_bar",
+		hudOverlay:   "overlay",
+		hudOff:       "off",
+	}
+	saveSetting(cwd, "hud", labels[mode])
 }

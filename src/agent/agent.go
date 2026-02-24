@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/anthropics/agent/api"
@@ -265,8 +266,8 @@ func (a *Agent) loop(ctx context.Context) error {
 			a.onCompaction()
 		}
 
-		var toolResults []api.ContentBlock
-		denied := false
+		// Process non-tool blocks first, collect tool_use blocks.
+		var toolBlocks []api.ContentBlock
 		for _, block := range resp.Content {
 			switch block.Type {
 			case "thinking":
@@ -277,21 +278,13 @@ func (a *Agent) loop(ctx context.Context) error {
 				// Compaction blocks are kept in the message history —
 				// the API will drop all content before them automatically.
 			case "tool_use":
-				if denied {
-					// A previous tool in this response was denied — skip
-					// remaining tools but still provide a result so the
-					// conversation stays valid for the API.
-					toolResults = append(toolResults, api.ToolResultBlock(
-						block.ID, "Error: tool execution skipped — user denied a previous tool in this response", true))
-					continue
-				}
-				result, wasDenied := a.executeTool(block)
-				toolResults = append(toolResults, result)
-				if wasDenied {
-					denied = true
-				}
+				toolBlocks = append(toolBlocks, block)
 			}
 		}
+
+		// Execute tools. Concurrent tools (e.g. dispatch) run in parallel;
+		// sequential tools run one at a time in order.
+		toolResults, denied := a.executeTools(toolBlocks)
 		if resp.StopReason == api.StopCompaction {
 			// Compaction paused the response — continue to let the model
 			// resume with the compacted context.
@@ -314,56 +307,162 @@ func (a *Agent) loop(ctx context.Context) error {
 	return fmt.Errorf("agent loop exceeded 50 iterations")
 }
 
-// executeTool runs a single tool call. The second return value is true when the
-// user denied the confirmation prompt, signalling the loop to stop.
-func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
-	tool, err := a.registry.Get(block.Name)
-	if err != nil {
-		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true), false
+// executeTools processes a batch of tool_use blocks. Tools that implement
+// tools.ConcurrentTool are run in parallel; all other tools run sequentially.
+// Confirmations are always handled sequentially (one at a time for the UI).
+// Returns the ordered tool results and whether any tool was denied.
+func (a *Agent) executeTools(blocks []api.ContentBlock) ([]api.ContentBlock, bool) {
+	if len(blocks) == 0 {
+		return nil, false
 	}
-	summary := summarizeInput(block.Name, block.Input)
-	a.onTool(block.Name, summary)
 
-	if tool.RequiresConfirmation() && !a.allowedTools[block.Name] {
-		mode := a.GetPermissionMode()
-		switch mode {
-		case ModePlan:
-			// Plan mode allows bash (with confirmation) but blocks write/edit/dispatch.
-			if block.Name != "bash" {
-				return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only). Use write/edit only after switching to Confirm mode.", true), true
-			}
-			// Bash in plan mode — require confirmation like Confirm mode.
-			switch a.onConfirm(block.Name, block.Input) {
-			case ConfirmAlways:
-				a.allowedTools[block.Name] = true
-			case ConfirmAllow:
-				// proceed
-			default:
-				return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
-			}
-		case ModeTerminal:
-			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — terminal mode", true), true
-		case ModeYOLO:
-			// Auto-approve, skip confirmation callback.
-		default: // ModeConfirm
-			switch a.onConfirm(block.Name, block.Input) {
-			case ConfirmAlways:
-				a.allowedTools[block.Name] = true
-			case ConfirmAllow:
-				// proceed
-			default: // ConfirmDeny
-				return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
+	// Phase 1: confirm all tools and identify which are concurrent.
+	// We must do confirmations sequentially (UI interaction).
+	type confirmedTool struct {
+		block      api.ContentBlock
+		tool       tools.Tool
+		denied     bool // user denied
+		errResult  *api.ContentBlock // pre-built error result (tool not found, blocked, etc.)
+		concurrent bool
+	}
+
+	confirmed := make([]confirmedTool, len(blocks))
+	denied := false
+
+	for i, block := range blocks {
+		confirmed[i].block = block
+
+		if denied {
+			r := api.ToolResultBlock(block.ID,
+				"Error: tool execution skipped — user denied a previous tool in this response", true)
+			confirmed[i].errResult = &r
+			continue
+		}
+
+		tool, err := a.registry.Get(block.Name)
+		if err != nil {
+			r := api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true)
+			confirmed[i].errResult = &r
+			continue
+		}
+		confirmed[i].tool = tool
+
+		summary := summarizeInput(block.Name, block.Input)
+		a.onTool(block.Name, summary)
+
+		// Handle confirmation
+		if errMsg, wasDenied := a.confirmTool(tool, block); wasDenied {
+			r := api.ToolResultBlock(block.ID, errMsg, true)
+			confirmed[i].errResult = &r
+			confirmed[i].denied = true
+			denied = true
+			continue
+		}
+
+		// Check if this tool supports concurrent execution
+		if ct, ok := tool.(tools.ConcurrentTool); ok && ct.IsConcurrent() {
+			confirmed[i].concurrent = true
+		}
+	}
+
+	// Phase 2: execute tools. Launch concurrent tools in goroutines,
+	// run sequential tools inline, then collect all results in order.
+	type indexedResult struct {
+		index  int
+		result api.ContentBlock
+	}
+
+	results := make([]api.ContentBlock, len(blocks))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var concurrentResults []indexedResult
+
+	for i, ct := range confirmed {
+		if ct.errResult != nil {
+			results[i] = *ct.errResult
+			continue
+		}
+
+		if ct.concurrent {
+			wg.Add(1)
+			go func(idx int, t tools.Tool, b api.ContentBlock) {
+				defer wg.Done()
+				result, err := t.Execute(b.Input)
+				var r api.ContentBlock
+				if err != nil {
+					a.onToolResult(b.Name, fmt.Sprintf("Error: %s", err), true)
+					r = api.ToolResultBlock(b.ID, fmt.Sprintf("Error: %s", err), true)
+				} else {
+					a.onToolResult(b.Name, result, false)
+					r = api.ToolResultBlock(b.ID, result, false)
+				}
+				mu.Lock()
+				concurrentResults = append(concurrentResults, indexedResult{idx, r})
+				mu.Unlock()
+			}(i, ct.tool, ct.block)
+		} else {
+			// Sequential execution
+			result, err := ct.tool.Execute(ct.block.Input)
+			if err != nil {
+				a.onToolResult(ct.block.Name, fmt.Sprintf("Error: %s", err), true)
+				results[i] = api.ToolResultBlock(ct.block.ID, fmt.Sprintf("Error: %s", err), true)
+			} else {
+				a.onToolResult(ct.block.Name, result, false)
+				results[i] = api.ToolResultBlock(ct.block.ID, result, false)
 			}
 		}
 	}
 
-	result, err := tool.Execute(block.Input)
-	if err != nil {
-		a.onToolResult(block.Name, fmt.Sprintf("Error: %s", err), true)
-		return api.ToolResultBlock(block.ID, fmt.Sprintf("Error: %s", err), true), false
+	// Wait for all concurrent tools to finish
+	wg.Wait()
+
+	// Place concurrent results into the ordered results slice
+	for _, cr := range concurrentResults {
+		results[cr.index] = cr.result
 	}
-	a.onToolResult(block.Name, result, false)
-	return api.ToolResultBlock(block.ID, result, false), false
+
+	return results, denied
+}
+
+// confirmTool handles the confirmation prompt for a tool call.
+// Returns ("", false) if execution should proceed.
+// Returns (errorMsg, true) if the user denied or the mode blocks the tool.
+func (a *Agent) confirmTool(tool tools.Tool, block api.ContentBlock) (string, bool) {
+	if !tool.RequiresConfirmation() || a.allowedTools[block.Name] {
+		return "", false
+	}
+
+	mode := a.GetPermissionMode()
+	switch mode {
+	case ModePlan:
+		// Plan mode allows bash (with confirmation) but blocks write/edit/dispatch.
+		if block.Name != "bash" {
+			return "Error: tool execution blocked — planning mode (read-only). Use write/edit only after switching to Confirm mode.", true
+		}
+		// Bash in plan mode — require confirmation like Confirm mode.
+		switch a.onConfirm(block.Name, block.Input) {
+		case ConfirmAlways:
+			a.allowedTools[block.Name] = true
+		case ConfirmAllow:
+			// proceed
+		default:
+			return "Error: tool execution denied by user", true
+		}
+	case ModeTerminal:
+		return "Error: tool execution blocked — terminal mode", true
+	case ModeYOLO:
+		// Auto-approve, skip confirmation callback.
+	default: // ModeConfirm
+		switch a.onConfirm(block.Name, block.Input) {
+		case ConfirmAlways:
+			a.allowedTools[block.Name] = true
+		case ConfirmAllow:
+			// proceed
+		default: // ConfirmDeny
+			return "Error: tool execution denied by user", true
+		}
+	}
+	return "", false
 }
 
 func summarizeInput(name string, input map[string]any) string {

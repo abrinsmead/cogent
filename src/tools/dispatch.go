@@ -47,3 +47,4 @@ func (d *DispatchTool) Execute(input map[string]any) (string, error) {
 }
 
 func (d *DispatchTool) RequiresConfirmation() bool { return true }
+func (d *DispatchTool) IsConcurrent() bool          { return true }
