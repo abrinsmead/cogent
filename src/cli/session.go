@@ -92,6 +92,9 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiDim.Render(text)}}
 		}),
+		agent.WithThinkingCallback(func(thinking string) {
+			msgCh <- sessionMsg{sessionID: id, inner: tuiThinkingMsg{text: thinking}}
+		}),
 		agent.WithToolCallback(func(name, summary string) {
 			style := tuiGreen
 			switch name {

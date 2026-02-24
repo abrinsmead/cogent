@@ -143,10 +143,10 @@ func (c *Client) CostForUsage(u Usage) float64 {
 }
 
 func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef) (*Response, error) {
-	return c.SendMessageCtx(context.Background(), system, messages, tools)
+	return c.SendMessageCtx(context.Background(), system, messages, tools, nil)
 }
 
-func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []ToolDef) (*Response, error) {
+func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []ToolDef, thinking *ThinkingConfig) (*Response, error) {
 	// Build system prompt as a content block array.
 	var sysBlocks []SystemBlock
 	if system != "" {
@@ -169,6 +169,7 @@ func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []M
 		System:       sysBlocks,
 		Messages:     messages,
 		Tools:        tools,
+		Thinking:     thinking,
 		ContextManagement: &ContextManagement{
 			Edits: []ContextEdit{{
 				Type: "compact_20260112",
@@ -178,6 +179,15 @@ func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []M
 				},
 			}},
 		},
+	}
+
+	// Extended thinking requires max_tokens to accommodate both thinking
+	// budget and response tokens. The API requires max_tokens > budget_tokens.
+	if thinking != nil && thinking.Type == "enabled" && thinking.BudgetTokens > 0 {
+		minMax := thinking.BudgetTokens + 8192
+		if req.MaxTokens < minMax {
+			req.MaxTokens = minMax
+		}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

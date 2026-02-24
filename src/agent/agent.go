@@ -73,6 +73,7 @@ type Agent struct {
 	permMode     atomic.Int32    // stores PermissionMode; atomic for cross-goroutine access
 	allowedTools map[string]bool // tools the user has "always allowed" for this session
 	onText       func(string)
+	onThinking   func(string) // called with extended thinking content
 	onTool       func(string, string)
 	onToolResult func(name string, result string, isError bool)
 	onConfirm    func(name string, input map[string]any) ConfirmResult
@@ -84,6 +85,10 @@ type Option func(*Agent)
 
 func WithTextCallback(fn func(string)) Option {
 	return func(a *Agent) { a.onText = fn }
+}
+
+func WithThinkingCallback(fn func(string)) Option {
+	return func(a *Agent) { a.onThinking = fn }
 }
 
 func WithToolCallback(fn func(string, string)) Option {
@@ -129,6 +134,7 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		system:       system,
 		allowedTools: make(map[string]bool),
 		onText:       func(s string) {},
+		onThinking:   func(s string) {},
 		onTool:       func(n, s string) {},
 		onToolResult: func(name, result string, isError bool) {},
 		onConfirm:    func(name string, input map[string]any) ConfirmResult { return ConfirmAllow },
@@ -186,16 +192,58 @@ func (a *Agent) SendCtx(ctx context.Context, userMessage string) error {
 	return a.loop(ctx)
 }
 
+// planPrompt is appended to the system prompt when plan mode is active.
+// It encourages deep analysis, clarifying questions, and structured output.
+const planPrompt = `
+
+IMPORTANT: You are in PLANNING MODE. Your goal is to deeply understand the task and produce a thorough plan before any code is changed.
+
+Approach:
+1. EXPLORE — Read relevant files, search for patterns, run read-only shell commands (git log, tests, etc.) to understand the codebase and the problem.
+2. CLARIFY — If the task is ambiguous, underspecified, or could be interpreted multiple ways, ask clarifying questions BEFORE proposing a plan. Do not guess at requirements.
+3. ANALYZE — Consider edge cases, test implications, backward compatibility, and potential breakage.
+4. PLAN — Present your plan as a structured, numbered checklist.
+
+Constraints:
+- You may use read-only tools: read, glob, grep, ls.
+- You may use bash for read-only commands (git log/diff/status, running tests, cat, find, etc.). Destructive shell commands will require user confirmation.
+- Do NOT use write or edit — describe what changes you would make instead.
+- Do NOT use dispatch — planning should happen in a single context.
+
+When you have gathered enough information, present your final plan in this format:
+
+## Plan
+
+1. **file/path.go** — Description of change and why
+2. **file/path.go** — Description of change and why
+...
+
+### Risks / Open Questions
+- Any concerns or alternatives worth noting
+
+End with: "Switch to Confirm mode (Shift+Tab) to execute this plan."`
+
 func (a *Agent) loop(ctx context.Context) error {
 	for i := 0; i < 50; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		system := a.system
-		if a.GetPermissionMode() == ModePlan {
-			system += "\n\nIMPORTANT: You are in planning mode. You may only use read-only tools (read, glob, grep, ls). Do NOT use bash, write, or edit. Instead, describe what changes you would make and why."
+		isPlan := a.GetPermissionMode() == ModePlan
+		if isPlan {
+			system += planPrompt
 		}
-		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, a.registry.Definitions())
+
+		// Enable extended thinking in plan mode for deeper reasoning.
+		var thinking *api.ThinkingConfig
+		if isPlan {
+			thinking = &api.ThinkingConfig{
+				Type:         "enabled",
+				BudgetTokens: 10000,
+			}
+		}
+
+		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, a.registry.Definitions(), thinking)
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
 		}
@@ -221,6 +269,8 @@ func (a *Agent) loop(ctx context.Context) error {
 		denied := false
 		for _, block := range resp.Content {
 			switch block.Type {
+			case "thinking":
+				a.onThinking(block.Thinking)
 			case "text":
 				a.onText(block.Text)
 			case "compaction":
@@ -275,9 +325,24 @@ func (a *Agent) executeTool(block api.ContentBlock) (api.ContentBlock, bool) {
 	a.onTool(block.Name, summary)
 
 	if tool.RequiresConfirmation() && !a.allowedTools[block.Name] {
-		switch a.GetPermissionMode() {
-		case ModePlan, ModeTerminal:
-			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only)", true), true
+		mode := a.GetPermissionMode()
+		switch mode {
+		case ModePlan:
+			// Plan mode allows bash (with confirmation) but blocks write/edit/dispatch.
+			if block.Name != "bash" {
+				return api.ToolResultBlock(block.ID, "Error: tool execution blocked — planning mode (read-only). Use write/edit only after switching to Confirm mode.", true), true
+			}
+			// Bash in plan mode — require confirmation like Confirm mode.
+			switch a.onConfirm(block.Name, block.Input) {
+			case ConfirmAlways:
+				a.allowedTools[block.Name] = true
+			case ConfirmAllow:
+				// proceed
+			default:
+				return api.ToolResultBlock(block.ID, "Error: tool execution denied by user", true), true
+			}
+		case ModeTerminal:
+			return api.ToolResultBlock(block.ID, "Error: tool execution blocked — terminal mode", true), true
 		case ModeYOLO:
 			// Auto-approve, skip confirmation callback.
 		default: // ModeConfirm

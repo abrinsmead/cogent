@@ -75,7 +75,19 @@ Requires Go 1.24+ and `ANTHROPIC_API_KEY` set.
 
 ### Permission Modes
 
-Four modes cycle via Shift+Tab: Confirm → Plan → YOLO → Terminal. Plan and Terminal modes block destructive tools. YOLO auto-approves everything.
+Four modes cycle via Shift+Tab: Confirm → Plan → YOLO → Terminal.
+
+- **Confirm**: destructive tools require user confirmation.
+- **Plan**: extended thinking enabled, bash allowed with confirmation, write/edit/dispatch blocked. The agent explores the codebase, asks clarifying questions, and presents a structured plan for the user to approve before switching to Confirm mode to execute.
+- **YOLO**: auto-approves everything.
+- **Terminal**: user input runs as shell commands; agent tools blocked.
+
+### Extended Thinking
+
+- Plan mode enables extended thinking via the `thinking` API parameter (`budget_tokens: 10000`).
+- The API returns `thinking` content blocks which are displayed as collapsed summaries in the TUI.
+- When thinking is enabled, `max_tokens` is automatically increased to accommodate the thinking budget plus response tokens.
+- The `ThinkingConfig` type in `api/types.go` controls this; the `ContentBlock` type handles `thinking` blocks.
 
 ### API Client (`api/client.go`)
 
@@ -85,7 +97,7 @@ Four modes cycle via Shift+Tab: Confirm → Plan → YOLO → Terminal. Plan and
 - Base URL validated: must be HTTPS or localhost.
 - Context compaction configured via `context_management` field — triggers at 80% of context window (min 50k tokens).
 - System prompt sent as a content block array with `cache_control: ephemeral`.
-- `max_tokens` set to 16384.
+- `max_tokens` set to 16384 (automatically increased when extended thinking is enabled).
 
 ### Deterministic JSON Serialization (`api/types.go`)
 

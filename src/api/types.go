@@ -29,6 +29,7 @@ type ContentBlock struct {
 	ToolUseID string         `json:"tool_use_id"`
 	Content   string         `json:"content"`
 	IsError   bool           `json:"is_error"`
+	Thinking  string         `json:"thinking"`  // extended thinking content
 }
 
 // MarshalJSON produces deterministic JSON output. Go maps have random
@@ -63,6 +64,11 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 			ToolUseID string `json:"tool_use_id"`
 			Content   string `json:"content"`
 		}{cb.Type, cb.ToolUseID, cb.Content})
+	case "thinking":
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			Thinking string `json:"thinking"`
+		}{cb.Type, cb.Thinking})
 	case "compaction":
 		return json.Marshal(struct {
 			Type    string `json:"type"`
@@ -201,6 +207,12 @@ type SystemBlock struct {
 	Text string `json:"text"`
 }
 
+// ThinkingConfig enables extended thinking (chain-of-thought) for the request.
+type ThinkingConfig struct {
+	Type         string `json:"type"`          // "enabled" or "disabled"
+	BudgetTokens int    `json:"budget_tokens"` // max tokens for thinking
+}
+
 type Request struct {
 	Model             string             `json:"model"`
 	MaxTokens         int                `json:"max_tokens"`
@@ -208,6 +220,7 @@ type Request struct {
 	System            []SystemBlock      `json:"system,omitempty"`
 	Messages          []Message          `json:"messages"`
 	Tools             []ToolDef          `json:"tools,omitempty"`
+	Thinking          *ThinkingConfig    `json:"thinking,omitempty"`
 	ContextManagement *ContextManagement `json:"context_management,omitempty"`
 }
 

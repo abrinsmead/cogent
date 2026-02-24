@@ -112,6 +112,10 @@ var (
 
 	tuiTabDone = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("2"))
+
+	tuiThinking = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("4")).
+			Italic(true)
 )
 
 // ─── TUI (public wrapper) ───────────────────────────────────────────────────
@@ -137,6 +141,7 @@ func (t *TUI) Run() error {
 // ─── Bubble Tea messages ─────────────────────────────────────────────────────
 
 type tuiAppendMsg struct{ text string }
+type tuiThinkingMsg struct{ text string }
 type tuiDoneMsg struct{ err error }
 type tuiShellDoneMsg struct {
 	err     error
@@ -717,6 +722,17 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.appendLine(inner.text)
 		cmds = append(cmds, m.waitForMsg())
 
+	case tuiThinkingMsg:
+		// Show a collapsed summary of the thinking block
+		lines := strings.Split(strings.TrimSpace(inner.text), "\n")
+		lineCount := len(lines)
+		preview := lines[0]
+		if len(preview) > 80 {
+			preview = preview[:80] + "…"
+		}
+		s.appendLine(tuiThinking.Render(fmt.Sprintf("  💭 thinking (%d lines): %s", lineCount, preview)))
+		cmds = append(cmds, m.waitForMsg())
+
 	case tuiUsageMsg:
 		s.contextUsed = inner.usage.ContextUsed()
 		cost := m.client.CostForUsage(inner.usage)
@@ -897,6 +913,8 @@ func (m tuiModel) View() string {
 	case tuiStateRunning:
 		if s.agent.GetPermissionMode() == agent.ModeTerminal {
 			promptContent = tuiStatus.Render(" running... ") + tuiDim.Render("(ctrl+c to interrupt)")
+		} else if s.agent.GetPermissionMode() == agent.ModePlan {
+			promptContent = tuiStatus.Render(" planning... ") + tuiDim.Render("(extended thinking · ctrl+c to interrupt)")
 		} else {
 			promptContent = tuiStatus.Render(" thinking... ") + tuiDim.Render("(ctrl+c to interrupt)")
 		}
