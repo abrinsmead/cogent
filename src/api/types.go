@@ -30,6 +30,7 @@ type ContentBlock struct {
 	Content   string         `json:"content"`
 	IsError   bool           `json:"is_error"`
 	Thinking  string         `json:"thinking"`  // extended thinking content
+	Signature string         `json:"signature"` // opaque signature for thinking blocks (required by API)
 }
 
 // MarshalJSON produces deterministic JSON output. Go maps have random
@@ -66,9 +67,10 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 		}{cb.Type, cb.ToolUseID, cb.Content})
 	case "thinking":
 		return json.Marshal(struct {
-			Type     string `json:"type"`
-			Thinking string `json:"thinking"`
-		}{cb.Type, cb.Thinking})
+			Type      string `json:"type"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
+		}{cb.Type, cb.Thinking, cb.Signature})
 	case "compaction":
 		return json.Marshal(struct {
 			Type    string `json:"type"`
@@ -271,13 +273,10 @@ type UsageIteration struct {
 // ContextUsed returns the total tokens consumed by this response.
 // Cached tokens (both read and creation) still occupy the context window,
 // so they must be included alongside regular input and output tokens.
-// When compaction iterations are present, uses the last iteration's input
-// tokens as the effective context size (post-compaction).
+// The top-level InputTokens/OutputTokens fields reflect the final
+// non-compaction iteration, and CacheReadInputTokens/CacheCreationInputTokens
+// are always top-level — so we always use the top-level fields.
 func (u Usage) ContextUsed() int {
-	if len(u.Iterations) > 0 {
-		last := u.Iterations[len(u.Iterations)-1]
-		return last.InputTokens + last.OutputTokens
-	}
 	return u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
 }
 

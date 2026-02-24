@@ -488,6 +488,20 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Shift+Arrow — switch tabs instantly
+	switch msg.Type {
+	case tea.KeyShiftRight:
+		if m.active < len(m.sessions)-1 {
+			m.switchToSession(m.active + 1)
+		}
+		return m, nil
+	case tea.KeyShiftLeft:
+		if m.active > 0 {
+			m.switchToSession(m.active - 1)
+		}
+		return m, nil
+	}
+
 	// Scrollback keys: PgUp/PgDn/Up/Down work in any state.
 	switch msg.Type {
 	case tea.KeyPgUp:
@@ -624,7 +638,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → Plan → YOLO → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
-			s.appendLine(tuiDim.Render("Alt+1..9: jump to session by number"))
+			s.appendLine(tuiDim.Render("Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"))
 			s.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"))
 			s.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
 			s.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
