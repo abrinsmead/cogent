@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -176,6 +177,9 @@ type tuiSubAgentDoneMsg struct {
 	sessionID int
 }
 
+// dotTickMsg drives the animated dots in the prompt bar while the agent is running.
+type dotTickMsg struct{}
+
 // ─── Bubble Tea model ────────────────────────────────────────────────────────
 
 type tuiState int
@@ -214,7 +218,9 @@ type tuiModel struct {
 	msgCh          chan tea.Msg
 	initialPrompt  string // if set, sent automatically on Init
 
-	splash    *splashModel // non-nil while splash screen is active
+	splash     *splashModel // non-nil while splash screen is active
+	dotFrame   int          // animation frame for prompt dots
+	dotTicking bool         // true while the dot tick is active
 }
 
 // cur returns the currently active session.
@@ -316,6 +322,31 @@ func (m tuiModel) waitForMsg() tea.Cmd {
 	return func() tea.Msg { return <-m.msgCh }
 }
 
+func dotTick() tea.Cmd {
+	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
+		return dotTickMsg{}
+	})
+}
+
+// anyRunning returns true if any session is in the running state.
+func (m *tuiModel) anyRunning() bool {
+	for _, s := range m.sessions {
+		if s.state == tuiStateRunning {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureDotTick starts the dot animation tick if not already running.
+func (m *tuiModel) ensureDotTick() tea.Cmd {
+	if !m.dotTicking {
+		m.dotTicking = true
+		return dotTick()
+	}
+	return nil
+}
+
 // ─── Update ──────────────────────────────────────────────────────────────────
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -397,7 +428,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.autoName(prompt)
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg())
+		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 
 	case sessionMsg:
 		return m.handleSessionMsg(msg)
@@ -411,6 +442,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.done = true
 		}
 		cmds = append(cmds, m.waitForMsg())
+
+	case dotTickMsg:
+		m.dotFrame++
+		if m.anyRunning() {
+			cmds = append(cmds, dotTick())
+		} else {
+			m.dotTicking = false
+		}
 	}
 
 	// Update the active session's input if it's in input state
@@ -421,6 +460,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.recalcInputHeight() {
 			m.resizeAll()
 		}
+		cmds = append(cmds, cmd)
+	}
+
+	// Ensure dot animation is running while any session is active
+	if cmd := m.ensureDotTick(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 
@@ -734,14 +778,14 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(tuiYellow.Render("$ " + value))
 			s.state = tuiStateRunning
 			s.input.Blur()
-			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg())
+			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 		}
 
 		s.appendLine(tuiPrompt.Render("❯ " + value))
 		s.autoName(value)
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg())
+		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 
 	default:
 		var cmd tea.Cmd
@@ -931,7 +975,7 @@ func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
 	child.state = tuiStateRunning
 	child.input.Blur()
 
-	return m, tea.Batch(child.sendToAgent(msg.task, m.msgCh), m.waitForMsg())
+	return m, tea.Batch(child.sendToAgent(msg.task, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 }
 
 // switchToSession switches to the session at the given index.
@@ -1017,12 +1061,13 @@ func (m tuiModel) View() string {
 	case tuiStateConfirm:
 		promptContent = tuiStatus.Render(" y/n/a ")
 	case tuiStateRunning:
+		dots := strings.Repeat(".", m.dotFrame%4) + strings.Repeat(" ", 3-m.dotFrame%4)
 		if s.agent.GetPermissionMode() == agent.ModeTerminal {
-			promptContent = tuiStatus.Render(" running... ") + tuiDim.Render("(ctrl+c to interrupt)")
+			promptContent = tuiStatus.Render(" running"+dots+" ") + tuiDim.Render("(ctrl+c to interrupt)")
 		} else if s.agent.GetPermissionMode() == agent.ModePlan {
-			promptContent = tuiStatus.Render(" planning... ") + tuiDim.Render("(extended thinking · ctrl+c to interrupt)")
+			promptContent = tuiStatus.Render(" planning"+dots+" ") + tuiDim.Render("(extended thinking · ctrl+c to interrupt)")
 		} else {
-			promptContent = tuiStatus.Render(" thinking... ") + tuiDim.Render("(ctrl+c to interrupt)")
+			promptContent = tuiStatus.Render(" thinking"+dots+" ") + tuiDim.Render("(ctrl+c to interrupt)")
 		}
 	default:
 		promptContent = s.input.View()

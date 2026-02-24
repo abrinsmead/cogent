@@ -235,8 +235,7 @@ func (s splashModel) View() string {
 	}
 
 	// Subtitle
-	dots := int(elapsed*2) % 4
-	subtitle := "terminal agent" + strings.Repeat(".", dots) + strings.Repeat(" ", 3-dots)
+	subtitle := "COding aGENT"
 
 	// Collect all content lines: logo + blank + subtitle
 	var contentLines []string
