@@ -61,8 +61,8 @@ Cycle with **Shift+Tab** in the TUI — works both when idle **and while the age
 | Mode | Behaviour |
 |------|-----------|
 | **Confirm** | Asks before destructive tools *(default)* |
-| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. |
 | **YOLO** | Auto-approves every tool call |
+| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. |
 | **Terminal** | Pauses the agent — your input runs as shell commands |
 
 The mode change takes effect immediately — the very next tool call will use the new mode.
@@ -146,14 +146,14 @@ The input area auto-grows as you type (up to 10 lines).
 | `/rename <name>` | Rename the current session tab |
 | `/sessions` | List all sessions |
 | `/close` | Close the current session |
-| `/quit` | Exit |
+| `/quit` | Exit (also `/exit`, `/q`) |
 
 #### Status Bar
 
 The status bar at the bottom of the TUI shows:
 
 ```
- mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  main*
+ mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  git main*
 ```
 
 | Field | Description |
@@ -162,7 +162,7 @@ The status bar at the bottom of the TUI shows:
 | **ctx** | Context window usage: tokens used / model max |
 | **usd** | Cumulative cost for the session |
 | **pwd** | Working directory (shortened) |
-| **Branch** | Git branch, with `*` if there are uncommitted changes |
+| **git** | Git branch, with `*` if there are uncommitted changes |
 
 The permission mode is displayed as a badge above the input area, not in the status bar. You can cycle it with Shift+Tab.
 
