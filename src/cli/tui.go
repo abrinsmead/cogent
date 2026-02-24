@@ -213,6 +213,8 @@ type tuiModel struct {
 	hudMode        hudMode // cycles: StatusBar → Overlay → Off
 	msgCh          chan tea.Msg
 	initialPrompt  string // if set, sent automatically on Init
+
+	splash    *splashModel // non-nil while splash screen is active
 }
 
 // cur returns the currently active session.
@@ -243,12 +245,14 @@ func (m *tuiModel) sessionIndexByID(id int) int {
 func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
+	splash := newSplashModel()
 	m := tuiModel{
 		client:        client,
 		cwd:           cwd,
 		msgCh:         msgCh,
 		initialPrompt: prompt,
 		nextID:        0,
+		splash:        &splash,
 	}
 
 	// Create the initial default session
@@ -296,9 +300,14 @@ func (m *tuiModel) createSession() *session {
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink, m.waitForMsg()}
-	if m.initialPrompt != "" {
-		cmds = append(cmds, func() tea.Msg { return tuiInitialPromptMsg{} })
+	cmds := []tea.Cmd{m.waitForMsg()}
+	if m.splash != nil {
+		cmds = append(cmds, m.splash.Init())
+	} else {
+		cmds = append(cmds, textarea.Blink)
+		if m.initialPrompt != "" {
+			cmds = append(cmds, func() tea.Msg { return tuiInitialPromptMsg{} })
+		}
 	}
 	return tea.Batch(cmds...)
 }
@@ -312,6 +321,45 @@ func (m tuiModel) waitForMsg() tea.Cmd {
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// ── Splash screen phase ─────────────────────────────────────────────
+	if m.splash != nil {
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			m.width = msg.Width
+			m.height = msg.Height
+			// Forward to splash
+			updated, cmd := m.splash.Update(msg)
+			m.splash = &updated
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+
+		case splashDoneMsg:
+			// Transition from splash to main UI
+			m.splash = nil
+			m.resizeAll()
+			for _, s := range m.sessions {
+				s.refreshContent()
+			}
+			initCmds := []tea.Cmd{textarea.Blink}
+			if m.initialPrompt != "" {
+				initCmds = append(initCmds, func() tea.Msg { return tuiInitialPromptMsg{} })
+			}
+			return m, tea.Batch(initCmds...)
+
+		default:
+			// All other messages go to splash (keys, ticks, etc.)
+			updated, cmd := m.splash.Update(msg)
+			m.splash = &updated
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+	}
+
+	// ── Main UI phase ───────────────────────────────────────────────────
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -507,11 +555,30 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Shift+Arrow — switch tabs instantly
 	switch msg.Type {
 	case tea.KeyShiftRight:
+		if m.newTabFocused {
+			// Already at the rightmost element
+			return m, nil
+		}
 		if m.active < len(m.sessions)-1 {
 			m.switchToSession(m.active + 1)
+		} else {
+			// Move focus to the "+ New Session" button
+			m.tabFocused = true
+			m.newTabFocused = true
+			s.input.Blur()
+			m.scrollTabsToActive()
 		}
 		return m, nil
 	case tea.KeyShiftLeft:
+		if m.newTabFocused {
+			m.newTabFocused = false
+			m.tabFocused = false
+			m.scrollTabsToActive()
+			if s.state == tuiStateInput {
+				s.input.Focus()
+			}
+			return m, textarea.Blink
+		}
 		if m.active > 0 {
 			m.switchToSession(m.active - 1)
 		}
@@ -913,6 +980,11 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 func (m tuiModel) View() string {
 	if m.quitting {
 		return tuiDim.Render("Goodbye!") + "\n"
+	}
+
+	// Splash screen
+	if m.splash != nil {
+		return m.splash.View()
 	}
 
 	s := m.sessions[m.active]
