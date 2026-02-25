@@ -118,7 +118,22 @@ var (
 	tuiThinking = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("4")).
 			Italic(true)
+
+	tuiPaste = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("15"))
 )
+
+// formatUserPrompt returns the display string for a user prompt.
+// Long or multi-line input is collapsed into a short "[Paste: N lines]" label.
+func formatUserPrompt(prefix, value string) string {
+	lines := strings.Count(value, "\n")
+	if lines >= 2 || len(value) > 500 {
+		label := fmt.Sprintf("[Pasted %d lines]", lines+1)
+		return tuiPrompt.Render(prefix) + tuiPaste.Render(label)
+	}
+	return tuiPrompt.Render(prefix + value)
+}
 
 // ─── TUI (public wrapper) ───────────────────────────────────────────────────
 
@@ -432,7 +447,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prompt := m.initialPrompt
 		m.initialPrompt = ""
 		s := m.cur()
-		s.appendLine(tuiPrompt.Render("❯ " + prompt))
+		s.appendLine(formatUserPrompt("❯ ", prompt))
 		s.autoName(prompt)
 		m.setWindowTitle()
 		s.state = tuiStateRunning
@@ -793,7 +808,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 		}
 
-		s.appendLine(tuiPrompt.Render("❯ " + value))
+		s.appendLine(formatUserPrompt("❯ ", value))
 		s.autoName(value)
 		m.setWindowTitle()
 		s.state = tuiStateRunning
@@ -984,7 +999,7 @@ func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
 	m.scrollTabsToActive()
 
 	// Start the sub-agent — runs in background
-	child.appendLine(tuiPrompt.Render("❯ " + msg.task))
+	child.appendLine(formatUserPrompt("❯ ", msg.task))
 	child.state = tuiStateRunning
 	child.input.Blur()
 
