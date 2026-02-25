@@ -60,9 +60,9 @@ Cycle with **Shift+Tab** in the TUI — works both when idle **and while the age
 
 | Mode | Behaviour |
 |------|-----------|
-| **Confirm** | Asks before destructive tools *(default)* |
+| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. *(default)* |
+| **Confirm** | Asks before destructive tools |
 | **YOLO** | Auto-approves every tool call |
-| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. |
 | **Terminal** | Pauses the agent — your input runs as shell commands |
 
 The mode change takes effect immediately — the very next tool call will use the new mode.

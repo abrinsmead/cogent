@@ -27,12 +27,12 @@ Guidelines:
 type PermissionMode int
 
 const (
-	// ModeConfirm asks the user before executing destructive tools (default).
-	ModeConfirm PermissionMode = iota
+	// ModePlan disallows all destructive tools — the agent can only read/plan (default).
+	ModePlan PermissionMode = iota
+	// ModeConfirm asks the user before executing destructive tools.
+	ModeConfirm
 	// ModeYOLO auto-approves every tool invocation without asking.
 	ModeYOLO
-	// ModePlan disallows all destructive tools — the agent can only read/plan.
-	ModePlan
 	// ModeTerminal pauses the agent — user input goes to the shell directly.
 	ModeTerminal
 )
@@ -52,7 +52,7 @@ func (m PermissionMode) String() string {
 	}
 }
 
-// CyclePermissionMode returns the next mode: Confirm → YOLO → Plan → Terminal → Confirm.
+// CyclePermissionMode returns the next mode: Plan → Confirm → YOLO → Terminal → Plan.
 func CyclePermissionMode(m PermissionMode) PermissionMode {
 	return (m + 1) % numModes
 }

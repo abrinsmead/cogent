@@ -184,7 +184,7 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 	case splashTickMsg:
 		s.frame++
 		elapsed := time.Since(s.startTime)
-		if elapsed >= 2500*time.Millisecond {
+		if elapsed >= 1750*time.Millisecond {
 			return s, func() tea.Msg { return splashDoneMsg{} }
 		}
 		return s, splashTick()

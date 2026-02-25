@@ -82,10 +82,10 @@ Requires Go 1.24+ and `ANTHROPIC_API_KEY` set.
 
 ### Permission Modes
 
-Four modes cycle via Shift+Tab: Confirm → YOLO → Plan → Terminal.
+Four modes cycle via Shift+Tab: Plan → Confirm → YOLO → Terminal.
 
+- **Plan**: extended thinking enabled, read-only tools (read/glob/grep/ls) allowed freely, bash allowed with confirmation, write/edit/dispatch blocked. The agent explores the codebase, asks clarifying questions, and presents a structured plan (default).
 - **Confirm**: destructive tools require user confirmation.
-- **Plan**: extended thinking enabled, read-only tools (read/glob/grep/ls) allowed freely, bash allowed with confirmation, write/edit/dispatch blocked. The agent explores the codebase, asks clarifying questions, and presents a structured plan.
 - **YOLO**: auto-approves everything.
 - **Terminal**: user input runs as shell commands via `sh -c`; agent tools blocked. Shell I/O is injected into agent conversation history via `AppendHistory` so the agent sees what was run when switching back.
 

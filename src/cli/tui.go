@@ -774,7 +774,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		case value == "/help":
 			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions"))
-			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Confirm → YOLO → Plan → Terminal)"))
+			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
 			s.appendLine(tuiDim.Render("Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"))
@@ -1284,8 +1284,8 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			dot = dotStyle.Render("●") + " "
 		}
 
-		// Width measures content between │ borders: " " + dot + style(" label ")
-		w := lipgloss.Width(" " + dot + style.Render(label+" "))
+		// Width measures content between │ borders: " " + dot + style(" label ") + " "
+		w := lipgloss.Width(" " + dot + style.Render(" "+label+" ") + " ")
 		tabs = append(tabs, tabInfo{label: label, dot: dot, style: style, width: w})
 	}
 
@@ -1306,7 +1306,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 		newLabel = "+"
 		newStyle = tuiTabNew
 	}
-	nw := lipgloss.Width(" " + newStyle.Render(newLabel+" "))
+	nw := lipgloss.Width(" " + newStyle.Render(" "+newLabel+" ") + " ")
 	tabs = append(tabs, tabInfo{label: newLabel, style: newStyle, width: nw})
 
 	return tabs
@@ -1411,7 +1411,7 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 
 	for i, t := range visTabs {
 		midBuf.WriteString(tuiBorder.Render("│"))
-		midBuf.WriteString(" " + t.dot + t.style.Render(t.label+" "))
+		midBuf.WriteString(" " + t.dot + t.style.Render(" "+t.label+" ") + " ")
 		if i == len(visTabs)-1 {
 			midBuf.WriteString(tuiBorder.Render("│"))
 		}
