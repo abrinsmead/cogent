@@ -204,6 +204,7 @@ const (
 	tuiStateInput   tuiState = iota
 	tuiStateRunning
 	tuiStateConfirm
+	tuiStateLinear
 )
 
 type hudMode int
@@ -616,7 +617,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab key toggles focus to the tab bar
-	if msg.Type == tea.KeyTab && !m.tabFocused {
+	if msg.Type == tea.KeyTab && !m.tabFocused && s.state != tuiStateLinear {
 		m.tabFocused = true
 		s.input.Blur()
 		return m, nil
@@ -666,13 +667,13 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.scrollback = !s.output.AtBottom()
 		return m, nil
 	case tea.KeyUp:
-		if s.state != tuiStateInput {
+		if s.state != tuiStateInput && s.state != tuiStateLinear {
 			s.output.ScrollUp(3)
 			s.scrollback = !s.output.AtBottom()
 			return m, nil
 		}
 	case tea.KeyDown:
-		if s.state != tuiStateInput {
+		if s.state != tuiStateInput && s.state != tuiStateLinear {
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
 			return m, nil
@@ -707,6 +708,8 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch s.state {
 	case tuiStateConfirm:
 		return m.handleConfirm(msg)
+	case tuiStateLinear:
+		return m.handleLinear(msg)
 	default:
 		return m.handleInput(msg)
 	}
@@ -788,7 +791,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions"))
+			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /linear (/lin)"))
 			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
@@ -797,6 +800,12 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
 			s.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
 			s.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
+			return m, nil
+
+		case value == "/linear" || value == "/lin":
+			s.linear = newLinearModal(m.width, m.height)
+			s.state = tuiStateLinear
+			s.input.Blur()
 			return m, nil
 		}
 
@@ -873,6 +882,72 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	return m, nil
+}
+
+// handleLinear processes key events while the Linear ticket browser is open.
+func (m *tuiModel) handleLinear(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+	if s.linear == nil {
+		s.state = tuiStateInput
+		s.input.Focus()
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyEsc:
+		// Check if we're already at the top level before calling back
+		atTopLevel := !s.linear.showDetail && !(s.linear.view == linearViewProject && s.linear.inProject)
+		if atTopLevel {
+			// Close the modal
+			s.linear = nil
+			s.state = tuiStateInput
+			s.input.Focus()
+			return m, textarea.Blink
+		}
+		s.linear.back()
+		return m, nil
+
+	case tea.KeyUp:
+		s.linear.up()
+		return m, nil
+
+	case tea.KeyDown:
+		s.linear.down()
+		return m, nil
+
+	case tea.KeyTab:
+		s.linear.switchView()
+		return m, nil
+
+	case tea.KeyBackspace:
+		s.linear.back()
+		return m, nil
+
+	case tea.KeyEnter:
+		// If viewing detail, insert into prompt
+		if s.linear.showDetail {
+			t := s.linear.selectedTicket()
+			if t != nil {
+				text := formatTicketForPrompt(t)
+				s.linear = nil
+				s.state = tuiStateInput
+				s.input.Focus()
+				s.input.SetValue(text)
+				return m, textarea.Blink
+			}
+			return m, nil
+		}
+		s.linear.enter()
+		return m, nil
+
+	case tea.KeyCtrlC:
+		s.linear = nil
+		s.state = tuiStateInput
+		s.input.Focus()
+		return m, textarea.Blink
+	}
+
 	return m, nil
 }
 
@@ -1074,9 +1149,9 @@ func (m tuiModel) View() string {
 
 	var b strings.Builder
 
-	// Overlay HUD on the viewport output
+	// Overlay HUD on the viewport output (hidden while a modal is open)
 	viewportContent := s.output.View()
-	if m.hudMode == hudOverlay {
+	if m.hudMode == hudOverlay && !hasModal(s) {
 		hudLines := s.renderHUD(m.client, m.cwd)
 		if len(hudLines) > 0 {
 			viewportContent = overlayHUD(viewportContent, hudLines, m.width)
@@ -1179,7 +1254,28 @@ func (m tuiModel) View() string {
 	// Tab label and bottom rows
 	b.WriteString(tabRows)
 
-	return b.String()
+	view := b.String()
+
+	// Modal overlay — centered in the viewport area
+	if hasModal(s) {
+		if s.linear != nil {
+			// Size the modal to fill the terminal minus padding (2 cells each side)
+			mw := m.width - 4
+			if mw < 40 {
+				mw = m.width
+			}
+			mh := m.height - 4
+			if mh < 12 {
+				mh = m.height
+			}
+			s.linear.width = mw
+			s.linear.height = mh
+			modalStr := s.linear.render()
+			view = overlayModal(dimView(view), modalStr, m.width, m.height)
+		}
+	}
+
+	return view
 }
 
 // ensureActiveTabVisible adjusts tabScroll so the active tab (or the new-tab

@@ -38,6 +38,9 @@ type session struct {
 	inputHeight int
 	scrollback  bool
 
+	// Linear ticket browser
+	linear *linearModal
+
 	// Status bar stats (per-session)
 	contextUsed int
 	totalCost   float64
