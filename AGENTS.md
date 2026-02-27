@@ -27,6 +27,9 @@ cogent/
 │   │   ├── tui.go        # Bubble Tea full-screen UI (viewport, textarea, status bar, tab bar)
 │   │   ├── session.go    # per-session state (agent, viewport, input, sub-agent support)
 │   │   └── headless.go   # single-shot, auto-approve, for CI/pipes
+│   ├── config/
+│   │   ├── config.go     # global settings loader (~/.cogent/settings)
+│   │   └── config_test.go
 │   └── tools/
 │       ├── registry.go   # tool registry with RegisterTool for post-construction additions
 │       ├── safepath.go   # path validation (sandbox writes to cwd, resolves symlinks)
@@ -53,9 +56,17 @@ make install  # → /usr/local/bin/cogent
 make clean
 ```
 
-Requires Go 1.24+ and `ANTHROPIC_API_KEY` set.
+Requires Go 1.24+ and `ANTHROPIC_API_KEY` set (via environment or `~/.cogent/settings`).
 
 ## Architecture
+
+### Global Settings (`config/config.go`)
+
+- `config.Load()` reads `~/.cogent/settings` at startup, before the API client is created.
+- Uses `KEY=VALUE` format (same as `.env` — `#` comments, optional quoting).
+- Only sets keys not already in the environment — explicit env vars always win.
+- Intended for global credentials (`ANTHROPIC_API_KEY`, `LINEAR_API_KEY`, `LINEAR_USERNAME`, etc.).
+- **Precedence** (highest to lowest): explicit env vars → `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
 
 ### Agent Loop (`agent/agent.go`)
 

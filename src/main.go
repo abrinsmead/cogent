@@ -8,6 +8,7 @@ import (
 
 	"github.com/anthropics/agent/api"
 	"github.com/anthropics/agent/cli"
+	"github.com/anthropics/agent/config"
 	"golang.org/x/term"
 )
 
@@ -19,9 +20,16 @@ func main() {
 	if err != nil {
 		fatal("cannot determine working directory: %s", err)
 	}
+
+	// Load global settings (~/.cogent/settings) before creating the API
+	// client so keys like ANTHROPIC_API_KEY can come from the settings file.
+	if err := config.Load(); err != nil {
+		fatal("loading global settings: %s", err)
+	}
+
 	client, err := api.NewClient()
 	if err != nil {
-		fatal("%s\nSet ANTHROPIC_API_KEY.", err)
+		fatal("%s\nSet ANTHROPIC_API_KEY in the environment or in ~/.cogent/settings.", err)
 	}
 
 	prompt := strings.TrimSpace(strings.Join(flag.Args(), " "))
