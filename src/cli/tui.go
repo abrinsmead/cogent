@@ -1259,14 +1259,13 @@ func (m tuiModel) View() string {
 	// Modal overlay — centered in the viewport area
 	if hasModal(s) {
 		if s.linear != nil {
-			// Size the modal to fill the terminal minus padding (2 cells each side)
-			mw := m.width - 4
-			if mw < 40 {
-				mw = m.width
+			mw := m.width * 80 / 100
+			if mw > 100 {
+				mw = 100
 			}
-			mh := m.height - 4
-			if mh < 12 {
-				mh = m.height
+			mh := m.height * 70 / 100
+			if mh > 30 {
+				mh = 30
 			}
 			s.linear.width = mw
 			s.linear.height = mh
