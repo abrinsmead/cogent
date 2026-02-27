@@ -198,7 +198,7 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
     - PgUp/PgDn: scroll viewport page, ↑/↓: scroll 3 lines (when not in input)
     - y/n/a/Enter: allow / deny / always-allow tool during confirmation
 
-  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`.
+  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/prune`.
 
   - **Sub-agent tabs**: spawned by dispatch, prefixed with "(sub-agent)", colored dot for state.
 

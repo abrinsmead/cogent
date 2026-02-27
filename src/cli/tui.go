@@ -790,8 +790,12 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case value == "/prune":
+			tm, cmd := m.pruneSubAgents()
+			return tm, cmd
+
 		case value == "/help":
-			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /linear (/lin)"))
+			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /prune /linear (/lin)"))
 			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
@@ -1126,6 +1130,50 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 		ns.input.Focus()
 	}
 	return m, textarea.Blink
+}
+
+// pruneSubAgents removes all completed sub-agent sessions.
+func (m *tuiModel) pruneSubAgents() (tea.Model, tea.Cmd) {
+	s := m.cur()
+	pruned := 0
+	activeID := m.cur().id
+
+	// Remove completed sub-agent sessions (iterate backwards to keep indices stable).
+	for i := len(m.sessions) - 1; i >= 0; i-- {
+		sess := m.sessions[i]
+		if sess.isSubAgent && sess.done {
+			if sess.cancelFn != nil {
+				sess.cancelFn()
+			}
+			m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
+			pruned++
+		}
+	}
+
+	if pruned == 0 {
+		s.appendLine(tuiDim.Render("No completed sub-agent sessions to prune."))
+		return m, nil
+	}
+
+	// Restore active index to the session that was active before pruning.
+	for i, sess := range m.sessions {
+		if sess.id == activeID {
+			m.active = i
+			break
+		}
+	}
+
+	m.resizeAll()
+	m.scrollTabsToActive()
+	m.setWindowTitle()
+
+	label := "session"
+	if pruned > 1 {
+		label = "sessions"
+	}
+	s = m.cur()
+	s.appendLine(tuiDim.Render(fmt.Sprintf("Pruned %d completed sub-agent %s.", pruned, label)))
+	return m, nil
 }
 
 // ─── View ────────────────────────────────────────────────────────────────────
