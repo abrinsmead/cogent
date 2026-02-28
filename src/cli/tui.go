@@ -16,6 +16,7 @@ import (
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
+	"github.com/anthropics/agent/tools"
 )
 
 // ─── Lipgloss styles (TUI only) ─────────────────────────────────────────────
@@ -109,16 +110,6 @@ var (
 				Foreground(lipgloss.Color("1")).
 				Bold(true)
 
-	tuiTabSubAgent = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("4"))
-
-	tuiTabDone = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("2"))
-
-	tuiThinking = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("4")).
-			Italic(true)
-
 	tuiPaste = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("0")).
 			Background(lipgloss.Color("15"))
@@ -158,7 +149,6 @@ func (t *TUI) Run() error {
 // ─── Bubble Tea messages ─────────────────────────────────────────────────────
 
 type tuiAppendMsg struct{ text string }
-type tuiThinkingMsg struct{ text string }
 type tuiDoneMsg struct{ err error }
 type tuiShellDoneMsg struct {
 	err     error
@@ -169,28 +159,16 @@ type tuiUsageMsg struct{ usage api.Usage }
 type tuiInitialPromptMsg struct{}
 type tuiCompactionMsg struct{}
 type tuiConfirmMsg struct {
-	name  string
-	input map[string]any
-	reply chan agent.ConfirmResult
+	name     string
+	input    map[string]any
+	reply    chan agent.ConfirmResult
+	subAgent bool // true if from a sub-agent (routed to parent)
 }
 
 // sessionMsg wraps a message with the session ID it belongs to.
 type sessionMsg struct {
 	sessionID int
 	inner     tea.Msg
-}
-
-// tuiSpawnMsg is sent by the dispatch tool to request a new sub-agent session.
-type tuiSpawnMsg struct {
-	task     string
-	parentID int
-	resultCh chan string
-	errCh    chan error
-}
-
-// tuiSubAgentDoneMsg is sent when a sub-agent session completes.
-type tuiSubAgentDoneMsg struct {
-	sessionID int
 }
 
 // dotTickMsg drives the animated dots in the prompt bar while the agent is running.
@@ -297,26 +275,37 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 }
 
 // wireDispatch sets up the dispatch tool's spawn function for a session.
+// Sub-agents run as tab-less goroutines with all tools except dispatch.
+// Confirmations are routed to the parent session's tab.
 func (m *tuiModel) wireDispatch(s *session) {
+	client := m.client
+	cwd := m.cwd
 	msgCh := m.msgCh
 	parentID := s.id
-	s.setDispatchSpawn(func(task string) (string, error) {
-		resultCh := make(chan string, 1)
-		errCh := make(chan error, 1)
-		msgCh <- tuiSpawnMsg{
-			task:     task,
-			parentID: parentID,
-			resultCh: resultCh,
-			errCh:    errCh,
-		}
-		// Block until the sub-agent completes
-		select {
-		case result := <-resultCh:
-			return result, nil
-		case err := <-errCh:
+
+	dt := &tools.DispatchTool{}
+	s.agent.Registry().RegisterTool(dt)
+	dt.Spawn = func(task string) (string, error) {
+		reg := tools.NewRegistry(cwd)
+		ag := agent.New(client, cwd,
+			agent.WithRegistry(reg),
+			agent.WithPermissionMode(s.agent.GetPermissionMode()),
+			agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
+				reply := make(chan agent.ConfirmResult)
+				msgCh <- sessionMsg{sessionID: parentID, inner: tuiConfirmMsg{
+					name: name, input: input, reply: reply, subAgent: true,
+				}}
+				return <-reply
+			}),
+			agent.WithUsageCallback(func(usage api.Usage) {
+				msgCh <- sessionMsg{sessionID: parentID, inner: tuiUsageMsg{usage: usage}}
+			}),
+		)
+		if err := ag.Send(task); err != nil {
 			return "", err
 		}
-	})
+		return ag.LastResponse(), nil
+	}
 }
 
 // createSession creates a new session and adds it to the model.
@@ -457,16 +446,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionMsg:
 		return m.handleSessionMsg(msg)
-
-	case tuiSpawnMsg:
-		return m.handleSpawn(msg)
-
-	case tuiSubAgentDoneMsg:
-		s := m.sessionByID(msg.sessionID)
-		if s != nil && s.isSubAgent {
-			s.done = true
-		}
-		cmds = append(cmds, m.waitForMsg())
 
 	case dotTickMsg:
 		m.dotFrame++
@@ -779,23 +758,13 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					status = "running"
 				} else if sess.state == tuiStateConfirm {
 					status = "needs confirmation"
-				} else if sess.isSubAgent && sess.done {
-					status = "done"
 				}
-				label := sess.name
-				if sess.isSubAgent {
-					label = "(sub-agent) " + label
-				}
-				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s (%s)", marker, i+1, label, status)))
+				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s (%s)", marker, i+1, sess.name, status)))
 			}
 			return m, nil
 
-		case value == "/prune":
-			tm, cmd := m.pruneSubAgents()
-			return tm, cmd
-
 		case value == "/help":
-			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /prune /linear (/lin)"))
+			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /linear (/lin)"))
 			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"))
 			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
 			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
@@ -970,17 +939,6 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.appendLine(inner.text)
 		cmds = append(cmds, m.waitForMsg())
 
-	case tuiThinkingMsg:
-		// Show a collapsed summary of the thinking block
-		lines := strings.Split(strings.TrimSpace(inner.text), "\n")
-		lineCount := len(lines)
-		preview := lines[0]
-		if len(preview) > 80 {
-			preview = preview[:80] + "…"
-		}
-		s.appendLine(tuiThinking.Render(fmt.Sprintf("  💭 thinking (%d lines): %s", lineCount, preview)))
-		cmds = append(cmds, m.waitForMsg())
-
 	case tuiUsageMsg:
 		s.contextUsed = inner.usage.ContextUsed()
 		cost := m.client.CostForUsage(inner.usage)
@@ -996,7 +954,11 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.state = tuiStateConfirm
 		s.appendLine(tuiRenderDiff(inner.name, inner.input))
 		summary := SummarizeConfirm(inner.name, inner.input)
-		s.appendLine(tuiYellow.Render(fmt.Sprintf("Allow %s %s? [Y/n/a] ", inner.name, summary)))
+		prefix := ""
+		if inner.subAgent {
+			prefix = "(sub-agent) "
+		}
+		s.appendLine(tuiYellow.Render(fmt.Sprintf("%sAllow %s %s? [Y/n/a] ", prefix, inner.name, summary)))
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
 	case tuiDoneMsg:
@@ -1010,17 +972,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
-		// Notify user that the session needs input
-		if !s.isSubAgent {
-			cmds = append(cmds, notifyCmd(s.name+" is done"))
-		}
-		// If this is a sub-agent, send result back to parent
-		if s.isSubAgent && s.resultCh != nil {
-			result := s.agent.LastResponse()
-			s.resultCh <- result
-			s.resultCh = nil
-			m.msgCh <- tuiSubAgentDoneMsg{sessionID: s.id}
-		}
+		cmds = append(cmds, notifyCmd(s.name+" is done"))
 
 	case tuiShellDoneMsg:
 		s.state = tuiStateInput
@@ -1048,41 +1000,6 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
-}
-
-// handleSpawn creates a new sub-agent session from a dispatch tool call.
-func (m *tuiModel) handleSpawn(msg tuiSpawnMsg) (tea.Model, tea.Cmd) {
-	child := m.createSession()
-	child.parentID = msg.parentID
-	child.isSubAgent = true
-	child.resultCh = msg.resultCh
-
-	// Name from task
-	name := strings.TrimSpace(msg.task)
-	if idx := strings.IndexByte(name, '\n'); idx > 0 {
-		name = name[:idx]
-	}
-	if len(name) > 24 {
-		name = name[:24] + "…"
-	}
-	child.name = name
-	child.nameSet = true
-
-	// Inherit permission mode from parent
-	parent := m.sessionByID(msg.parentID)
-	if parent != nil {
-		child.agent.SetPermissionMode(parent.agent.GetPermissionMode())
-	}
-
-	m.resizeAll()
-	m.scrollTabsToActive()
-
-	// Start the sub-agent — runs in background
-	child.appendLine(formatUserPrompt("❯ ", msg.task))
-	child.state = tuiStateRunning
-	child.input.Blur()
-
-	return m, tea.Batch(child.sendToAgent(msg.task, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 }
 
 // switchToSession switches to the session at the given index.
@@ -1113,11 +1030,6 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
-	// If it's a sub-agent that hasn't sent its result, send an error
-	if s.isSubAgent && s.resultCh != nil {
-		s.resultCh <- "Error: sub-agent session was closed by user"
-		s.resultCh = nil
-	}
 	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
 	if m.active >= len(m.sessions) {
 		m.active = len(m.sessions) - 1
@@ -1130,50 +1042,6 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 		ns.input.Focus()
 	}
 	return m, textarea.Blink
-}
-
-// pruneSubAgents removes all completed sub-agent sessions.
-func (m *tuiModel) pruneSubAgents() (tea.Model, tea.Cmd) {
-	s := m.cur()
-	pruned := 0
-	activeID := m.cur().id
-
-	// Remove completed sub-agent sessions (iterate backwards to keep indices stable).
-	for i := len(m.sessions) - 1; i >= 0; i-- {
-		sess := m.sessions[i]
-		if sess.isSubAgent && sess.done {
-			if sess.cancelFn != nil {
-				sess.cancelFn()
-			}
-			m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
-			pruned++
-		}
-	}
-
-	if pruned == 0 {
-		s.appendLine(tuiDim.Render("No completed sub-agent sessions to prune."))
-		return m, nil
-	}
-
-	// Restore active index to the session that was active before pruning.
-	for i, sess := range m.sessions {
-		if sess.id == activeID {
-			m.active = i
-			break
-		}
-	}
-
-	m.resizeAll()
-	m.scrollTabsToActive()
-	m.setWindowTitle()
-
-	label := "session"
-	if pruned > 1 {
-		label = "sessions"
-	}
-	s = m.cur()
-	s.appendLine(tuiDim.Render(fmt.Sprintf("Pruned %d completed sub-agent %s.", pruned, label)))
-	return m, nil
 }
 
 // ─── View ────────────────────────────────────────────────────────────────────
@@ -1414,12 +1282,8 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			} else {
 				style = tuiTabActive
 			}
-		} else if s.isSubAgent && s.done {
-			style = tuiTabDone
 		} else if s.state == tuiStateConfirm {
 			style = tuiTabNeedsAttention
-		} else if s.isSubAgent {
-			style = tuiTabSubAgent
 		} else if s.state == tuiStateRunning {
 			style = tuiTabRunning
 		} else {
@@ -1429,10 +1293,6 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 		var dotColor lipgloss.TerminalColor
 		if s.state == tuiStateConfirm {
 			dotColor = lipgloss.Color("1")
-		} else if s.isSubAgent && s.done {
-			dotColor = lipgloss.Color("2")
-		} else if s.isSubAgent && s.state == tuiStateRunning {
-			dotColor = lipgloss.Color("4")
 		} else if s.state == tuiStateRunning {
 			dotColor = lipgloss.Color("3")
 		}

@@ -18,7 +18,6 @@ import (
 
 	"github.com/anthropics/agent/agent"
 	"github.com/anthropics/agent/api"
-	"github.com/anthropics/agent/tools"
 )
 
 // session holds all per-conversation state. Each tab in the TUI is one session.
@@ -44,12 +43,6 @@ type session struct {
 	// Status bar stats (per-session)
 	contextUsed int
 	totalCost   float64
-
-	// Sub-agent fields
-	parentID   int         // 0 = user-created
-	isSubAgent bool        // true if spawned by dispatch tool
-	done       bool          // true when sub-agent has completed
-	resultCh   chan string // sub-agent sends result here when done
 }
 
 // newSession creates a session with its own agent, textarea, and viewport.
@@ -95,9 +88,6 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiDim.Render(text)}}
 		}),
-		agent.WithThinkingCallback(func(thinking string) {
-			msgCh <- sessionMsg{sessionID: id, inner: tuiThinkingMsg{text: thinking}}
-		}),
 		agent.WithToolCallback(func(name, summary string) {
 			style := tuiGreen
 			switch name {
@@ -106,28 +96,6 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 			}
 			line := tuiDim.Render(" "+style.Render(name)) + " " + tuiDim.Render(summary)
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: line}}
-		}),
-		agent.WithToolResultCallback(func(name, result string, isError bool) {
-			if result == "" {
-				return
-			}
-			const maxLines = 3
-			lines := strings.Split(result, "\n")
-			truncated := false
-			if len(lines) > maxLines {
-				lines = lines[:maxLines]
-				truncated = true
-			}
-			style := tuiDim
-			if isError {
-				style = tuiRed
-			}
-			for _, line := range lines {
-				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: style.Render("  " + line)}}
-			}
-			if truncated {
-				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiYellow.Render(fmt.Sprintf("  ... output truncated (%d lines shown)", maxLines))}}
-			}
 		}),
 		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
 			reply := make(chan agent.ConfirmResult)
@@ -142,22 +110,9 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		}),
 	)
 
-	// Register the dispatch tool — the spawn function is set later by the TUI
-	// once the model is fully initialized. The tool checks for nil at execution.
-	s.agent.Registry().RegisterTool(&tools.DispatchTool{})
-
 	s.lines = []string{""}
 
 	return s
-}
-
-// setDispatchSpawn wires up the dispatch tool's spawn function for this session.
-func (s *session) setDispatchSpawn(fn tools.SpawnFunc) {
-	if t, err := s.agent.Registry().Get("dispatch"); err == nil {
-		if dt, ok := t.(*tools.DispatchTool); ok {
-			dt.Spawn = fn
-		}
-	}
 }
 
 // autoName sets the tab name from the first user prompt, unless manually renamed.

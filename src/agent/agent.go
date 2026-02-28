@@ -116,6 +116,12 @@ func WithPermissionMode(m PermissionMode) Option {
 	return func(a *Agent) { a.permMode.Store(int32(m)) }
 }
 
+// WithRegistry overrides the default tool registry. Useful for sub-agents
+// that need a restricted tool set (e.g. no dispatch).
+func WithRegistry(r *tools.Registry) Option {
+	return func(a *Agent) { a.registry = r }
+}
+
 func New(client *api.Client, cwd string, opts ...Option) *Agent {
 	system := fmt.Sprintf(systemPrompt, envDescription(), cwd)
 	if guide := shellGuidance(); guide != "" {

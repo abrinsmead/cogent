@@ -52,7 +52,7 @@ Destructive tools (`bash`, `write`, `edit`, `dispatch`) require confirmation bef
 
 ### Sub-agents
 
-The `dispatch` tool lets the agent delegate subtasks to independent sub-agents. Each sub-agent runs in its own context window with the full set of tools, gets its own tab in the TUI (shown in blue with a colored status dot), and returns its final output to the parent when done. Useful for parallelizing work or isolating tasks that benefit from a fresh context.
+The `dispatch` tool lets the agent delegate subtasks to independent sub-agents. Each sub-agent runs in its own context window with the full set of tools (except dispatch — no recursion), and returns its final output to the parent when done. Sub-agents run as background goroutines without their own tabs — confirmations for destructive tools are routed to the parent session's tab. Useful for parallelizing work or isolating tasks that benefit from a fresh context.
 
 ### Permission Modes
 
@@ -146,6 +146,7 @@ The input area auto-grows as you type (up to 10 lines).
 | `/rename <name>` | Rename the current session tab |
 | `/sessions` | List all sessions |
 | `/close` | Close the current session |
+| `/linear` | Browse Linear tickets (also `/lin`) |
 | `/quit` | Exit (also `/exit`, `/q`) |
 
 #### Status Bar

@@ -26,7 +26,10 @@ cogent/
 │   │   ├── cli.go        # CLI interface, ANSI helpers, diff rendering
 │   │   ├── tui.go        # Bubble Tea full-screen UI (viewport, textarea, status bar, tab bar)
 │   │   ├── session.go    # per-session state (agent, viewport, input, sub-agent support)
-│   │   └── headless.go   # single-shot, auto-approve, for CI/pipes
+│   │   ├── headless.go   # single-shot, auto-approve, for CI/pipes
+│   │   ├── linear.go     # Linear ticket browser modal
+│   │   ├── modal.go      # modal overlay helpers (dim, center)
+│   │   └── splash.go     # animated startup splash screen
 │   ├── config/
 │   │   ├── config.go     # global settings loader (~/.cogent/settings)
 │   │   └── config_test.go
@@ -88,7 +91,7 @@ Requires Go 1.24+ and `ANTHROPIC_API_KEY` set (via environment or `~/.cogent/set
 ### Environment Detection (`agent/env.go`)
 
 - `envDescription()` generates a concise runtime description for the system prompt (e.g. "macOS (arm64, zsh)", "Linux/Alpine 3.19 (amd64, BusyBox ash)").
-- `shellGuidance()` returns extra POSIX-compatibility guidelines when the default shell is not bash (BusyBox ash, dash, etc.).
+- `shellGuidance()` returns extra POSIX-compatibility guidelines when the default shell is BusyBox ash, dash, or plain ash (not for other non-bash shells like zsh or fish).
 - Detects OS, architecture, Linux distro (via `/etc/os-release`), and shell (BusyBox check → `$SHELL` → probing).
 
 ### Permission Modes
@@ -115,7 +118,7 @@ Four modes cycle via Shift+Tab: Plan → Confirm → YOLO → Terminal.
 - Cache creation charged at 1.25× input price.
 - Base URL validated: must be HTTPS or localhost. Env vars: `ANTHROPIC_API_KEY` (required), `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`.
 - Context compaction configured via `context_management` field (type `compact_20260112`) — triggers at 80% of context window (min 50k tokens). Beta header `Anthropic-Beta: compact-2026-01-12` sent with every request.
-- System prompt sent as a content block array with `cache_control: ephemeral`.
+- System prompt sent as a content block array; `cache_control: ephemeral` is set on the top-level request.
 - `max_tokens` set to 16384 (automatically increased when extended thinking is enabled).
 
 ### Deterministic JSON Serialization (`api/types.go`)
@@ -154,7 +157,7 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
 - Implements `ConcurrentTool` — multiple dispatch calls in one batch run in parallel.
 - `SpawnFunc` is injected by the TUI after session creation — the tool checks for nil at execution time.
 - Sub-agents inherit the parent's permission mode and run to completion, returning their final text output.
-- Each sub-agent gets its own tab in the TUI, prefixed with "(sub-agent)".
+- Sub-agents run as tab-less goroutines — confirmations are routed to the parent session's tab, prefixed with "(sub-agent)".
 - Not available in headless mode (dispatch tool not registered).
 - Requires confirmation by default.
 
@@ -183,7 +186,7 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
 
   - **HUD modes** (cycle with Ctrl+H): status bar (default) → overlay (floating top-right box with color-coded context: green <50%, yellow 50–80%, red ≥80%) → off.
 
-  - **Tab bar** with colored dot indicators: yellow = running, red = needs attention (confirmation), blue = running sub-agent, green = completed sub-agent.
+  - **Tab bar** with colored dot indicators: yellow = running, red = needs attention (confirmation).
 
   - **Animated prompt dots** while agent is running (cycling every 400ms): "thinking..." / "planning... (extended thinking)" / "running..." depending on mode.
 
@@ -198,9 +201,9 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
     - PgUp/PgDn: scroll viewport page, ↑/↓: scroll 3 lines (when not in input)
     - y/n/a/Enter: allow / deny / always-allow tool during confirmation
 
-  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/prune`.
+  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/linear` (also `/lin`).
 
-  - **Sub-agent tabs**: spawned by dispatch, prefixed with "(sub-agent)", colored dot for state.
+  - **Sub-agent confirmations**: routed to the parent session's tab, prefixed with "(sub-agent)". Sub-agents run as tab-less goroutines — they don't get their own tabs.
 
   - **Desktop notifications**: OSC 9 + terminal bell on confirmation needed and session completion.
 

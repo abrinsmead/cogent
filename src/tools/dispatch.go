@@ -19,9 +19,10 @@ func (d *DispatchTool) Definition() api.ToolDef {
 	return api.ToolDef{
 		Name: "dispatch",
 		Description: "Delegate a subtask to a sub-agent. The sub-agent runs in a separate session " +
-			"with its own context window and full set of tools. Use this to parallelize work, " +
-			"handle tasks that benefit from a fresh context, or break down complex problems. " +
-			"The sub-agent runs to completion and returns its final text output.",
+			"with its own context window and full set of tools (except dispatch — no recursion). " +
+			"Use this to parallelize work, handle tasks that benefit from a fresh context, or " +
+			"break down complex problems. The sub-agent runs to completion and returns its final " +
+			"text output. Confirmations for destructive tools are routed to the parent session.",
 		InputSchema: api.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]api.Property{
