@@ -985,10 +985,6 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if inner.err != nil {
 			s.appendLine(line{Type: lineError, Data: inner.err.Error()})
 		}
-		// Avoid double blank line if the last line is already empty
-		if n := len(s.slines); n == 0 || s.slines[n-1].Type != lineEmpty {
-			s.appendLine(line{})
-		}
 		// Only focus the input if this is the active session
 		if s.id == m.cur().id {
 			s.input.Focus()
@@ -1015,7 +1011,6 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			}
 			s.agent.AppendHistory(userText, assistantText)
 		}
-		s.appendLine(line{})
 		if s.id == m.cur().id {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)

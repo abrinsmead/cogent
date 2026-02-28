@@ -93,7 +93,6 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 	s.agent = agent.New(client, cwd,
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineText, Data: text}}}
-			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{}}}
 		}),
 		agent.WithToolCallback(func(name, summary string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineTool, Data: name + "\x00" + summary}}}
@@ -151,14 +150,19 @@ func (s *session) rebuildRendered() {
 }
 
 // refreshContent re-wraps all rendered lines and updates the viewport.
+// Every non-empty line type gets a trailing blank line for visual spacing.
 func (s *session) refreshContent() {
 	w := s.output.Width
 	if w < 1 {
 		w = 80
 	}
 	var wrapped []string
-	for _, rl := range s.rlines {
+	for i, rl := range s.rlines {
 		wrapped = append(wrapped, ansi.Wrap(rl, w, ""))
+		// Add a blank line after every non-empty line type
+		if i < len(s.slines) && s.slines[i].Type != lineEmpty {
+			wrapped = append(wrapped, "")
+		}
 	}
 	s.output.SetContent(strings.Join(wrapped, "\n"))
 	if !s.scrollback {
