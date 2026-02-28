@@ -219,6 +219,8 @@ type tuiModel struct {
 	splash     *splashModel // non-nil while splash screen is active
 	dotFrame   int          // animation frame for prompt dots
 	dotTicking bool         // true while the dot tick is active
+
+	escFilterUntil time.Time // swallow escape-sequence fragments until this time
 }
 
 // cur returns the currently active session.
@@ -436,11 +438,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := m.cur()
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			s.output.ScrollUp(1)
+			s.output.ScrollUp(3)
 			s.scrollback = true
 		case tea.MouseButtonWheelDown:
-			s.output.ScrollDown(1)
+			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
+		case tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight:
+			// Ignore horizontal scroll (trackpad side-to-side gestures).
 		}
 		return m, nil
 
@@ -714,11 +718,23 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
 	// Filter out escape sequence fragments that Bubble Tea couldn't parse.
-	// These arrive as KeyRunes containing control characters or escape bytes.
+	// With mouse tracking enabled, partial SGR sequences (\x1b[<Cb;Cx;CyM)
+	// can arrive split across multiple KeyRunes messages. We use a time-based
+	// filter: when we see the start of a fragment (control chars, '['), we
+	// swallow any subsequent runes within 50ms that look like sequence
+	// continuations (digits, ';', '<', 'M', 'm').
 	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
-		if msg.Runes[0] < 0x20 || msg.Runes[0] == 0x7f {
+		r := msg.Runes[0]
+		if r < 0x20 || r == 0x7f || r == '[' {
+			m.escFilterUntil = time.Now().Add(50 * time.Millisecond)
 			return m, nil
 		}
+		if time.Now().Before(m.escFilterUntil) && isEscFragment(r) {
+			return m, nil
+		}
+	}
+	if msg.Type == tea.KeyEscape {
+		m.escFilterUntil = time.Now().Add(50 * time.Millisecond)
 	}
 
 	switch msg.Type {
@@ -1748,6 +1764,19 @@ func (m *tuiModel) tabOrderOf(s *session) int {
 }
 
 // scrollTabsToActive ensures the active tab (or new-tab button) is visible.
+// isEscFragment returns true for runes that commonly appear in SGR mouse
+// escape sequence tails (\x1b[<Cb;Cx;CyM) and other CSI sequences.
+func isEscFragment(r rune) bool {
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	switch r {
+	case ';', '<', 'M', 'm', '?', '~':
+		return true
+	}
+	return false
+}
+
 func (m *tuiModel) scrollTabsToActive() {
 	innerWidth := m.width - 2
 	if innerWidth < 1 {

@@ -207,7 +207,7 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
 
   - **Desktop notifications**: OSC 9 + terminal bell on confirmation needed and session completion.
 
-  - **Mouse**: always captured (`WithMouseCellMotion`). Scroll wheel on viewport (1 line per tick). Text selection via Shift+click/drag (standard terminal convention).
+  - **Mouse**: always captured (`WithMouseCellMotion`). Scroll wheel on viewport (3 lines per tick). Text selection via Shift+click/drag (standard terminal convention).
 
   - Accepts an optional initial prompt via CLI args.
 
