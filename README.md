@@ -15,6 +15,12 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 make install    # → /usr/local/bin/cogent
 ```
 
+Or store it persistently in `~/.cogent/settings`:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
 ## Usage
 
 ```sh
@@ -47,6 +53,7 @@ cogent --headless "run the test suite and fix failures"
 | `grep` | Search file contents with regex |
 | `ls` | List files and directories |
 | `dispatch` | Delegate a subtask to a sub-agent running in a separate context |
+| `web_search` | Search the web for up-to-date information (Anthropic server-side tool) |
 
 Destructive tools (`bash`, `write`, `edit`, `dispatch`) require confirmation before executing. `write` and `edit` show a diff preview at the confirmation prompt.
 
@@ -60,7 +67,7 @@ Cycle with **Shift+Tab** in the TUI — works both when idle **and while the age
 
 | Mode | Behaviour |
 |------|-----------|
-| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. *(default)* |
+| **Plan** | Extended thinking enabled — agent explores, asks clarifying questions, and produces a structured plan. Bash allowed (with confirmation), but write/edit/dispatch are blocked. When a plan is complete, the TUI prompts "Switch to Confirm mode and execute?" — pressing Y auto-switches and begins execution. *(default)* |
 | **Confirm** | Asks before destructive tools |
 | **YOLO** | Auto-approves every tool call |
 | **Terminal** | Pauses the agent — your input runs as shell commands |
@@ -129,7 +136,7 @@ Variables are loaded before tool discovery, so `@env required` checks will see t
 | **Shift+←/→** | Switch tabs |
 | **Alt+1..9** | Jump to tab by number |
 | **Tab** | Focus tab bar (←/→ to navigate, Enter to select, Esc to return) |
-| **Ctrl+H** | Cycle HUD mode (status bar → overlay → off) |
+| **Ctrl+H** | Cycle HUD mode (status bar → overlay → off; persists across sessions) |
 | **PgUp / PgDn** | Scroll output |
 | **↑ / ↓** | Scroll output (while agent is running) |
 | **Mouse wheel** | Scroll output |
@@ -145,8 +152,9 @@ The input area auto-grows as you type (up to 10 lines).
 | `/clear` | Clear conversation history |
 | `/rename <name>` | Rename the current session tab |
 | `/sessions` | List all sessions |
+| `/resume [name]` | Resume a saved session (by number or name) |
 | `/close` | Close the current session |
-| `/linear` | Browse Linear tickets (also `/lin`) |
+| `/tasks` | Browse tasks (also `/linear`, `/lin`) |
 | `/quit` | Exit (also `/exit`, `/q`) |
 
 #### Status Bar
@@ -154,7 +162,7 @@ The input area auto-grows as you type (up to 10 lines).
 The status bar at the bottom of the TUI shows:
 
 ```
- mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  git main*
+ mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  git main* +12/-3
 ```
 
 | Field | Description |
@@ -163,7 +171,7 @@ The status bar at the bottom of the TUI shows:
 | **ctx** | Context window usage: tokens used / model max |
 | **usd** | Cumulative cost for the session |
 | **pwd** | Working directory (shortened) |
-| **git** | Git branch, with `*` if there are uncommitted changes |
+| **git** | Git branch, with `*` if there are uncommitted changes and `+N/-M` line change counts |
 
 The permission mode is displayed as a badge above the input area, not in the status bar. You can cycle it with Shift+Tab.
 
@@ -181,7 +189,15 @@ monorepo/
 │       └── AGENTS.md  # package-specific (loaded second)
 ```
 
+### Session Persistence
+
+Sessions are automatically saved to `.cogent/sessions/` on completion and when tabs are closed. Open tabs are restored on next launch, so you can pick up where you left off.
+
+Use `/resume` to list saved sessions that aren't currently open, and `/resume <number>` or `/resume <name>` to restore one as a new tab.
+
 ## Configuration
+
+Settings can be stored in `~/.cogent/settings` (one `KEY=VALUE` per line). Explicit environment variables always take precedence.
 
 | Variable | Description |
 |----------|-------------|
