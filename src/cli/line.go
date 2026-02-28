@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -49,7 +50,7 @@ func renderLine(l line) string {
 		return ""
 
 	case lineText:
-		return " " + tuiStatusKey.Render("message") + "\n" + tuiDim.Render(l.Data)
+		return renderMarkdown(l.Data)
 
 	case lineTool:
 		name, summary, _ := strings.Cut(l.Data, "\x00")
@@ -155,4 +156,98 @@ func parseDiffInput(s string) map[string]any {
 	m := make(map[string]any)
 	_ = json.Unmarshal([]byte(s), &m)
 	return m
+}
+
+// renderMarkdown applies lightweight markdown styling using lipgloss.
+// Handles headings, bold, italic, inline code, fenced code blocks, and lists.
+// No external dependencies — just regex + lipgloss.
+var (
+	mdBold       = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	mdItalic     = regexp.MustCompile(`(?:^|[^*])\*([^*]+?)\*(?:[^*]|$)`)
+	mdInlineCode = regexp.MustCompile("`([^`]+)`")
+	mdHeading    = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	mdBullet     = regexp.MustCompile(`^(\s*)([-*+])\s+(.+)$`)
+	mdNumbered   = regexp.MustCompile(`^(\s*)(\d+\.)\s+(.+)$`)
+
+	mdStyleBold       = lipgloss.NewStyle().Bold(true)
+	mdStyleItalic     = lipgloss.NewStyle().Italic(true)
+	mdStyleInlineCode = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
+	mdStyleHeading    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	mdStyleCodeBlock  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+)
+
+func renderMarkdown(text string) string {
+	lines := strings.Split(text, "\n")
+	var out []string
+	inCode := false
+
+	for _, l := range lines {
+		// Fenced code blocks
+		if strings.HasPrefix(l, "```") {
+			inCode = !inCode
+			if inCode {
+				out = append(out, "")
+			} else {
+				out = append(out, "")
+			}
+			continue
+		}
+		if inCode {
+			out = append(out, "  "+mdStyleCodeBlock.Render(l))
+			continue
+		}
+
+		// Headings
+		if m := mdHeading.FindStringSubmatch(l); m != nil {
+			out = append(out, mdStyleHeading.Render(m[2]))
+			continue
+		}
+
+		// Bullet lists
+		if m := mdBullet.FindStringSubmatch(l); m != nil {
+			body := applyInlineStyles(m[3])
+			out = append(out, m[1]+mdStyleBullet.Render("• ")+body)
+			continue
+		}
+
+		// Numbered lists
+		if m := mdNumbered.FindStringSubmatch(l); m != nil {
+			body := applyInlineStyles(m[3])
+			out = append(out, m[1]+mdStyleBullet.Render(m[2]+" ")+body)
+			continue
+		}
+
+		out = append(out, applyInlineStyles(l))
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// applyInlineStyles renders bold, italic, and inline code within a line.
+func applyInlineStyles(s string) string {
+	// Inline code first (so bold/italic don't match inside code spans)
+	s = mdInlineCode.ReplaceAllStringFunc(s, func(m string) string {
+		inner := mdInlineCode.FindStringSubmatch(m)[1]
+		return mdStyleInlineCode.Render(" " + inner + " ")
+	})
+	// Bold
+	s = mdBold.ReplaceAllStringFunc(s, func(m string) string {
+		inner := mdBold.FindStringSubmatch(m)[1]
+		return mdStyleBold.Render(inner)
+	})
+	// Italic (single *)
+	s = mdItalic.ReplaceAllStringFunc(s, func(m string) string {
+		sub := mdItalic.FindStringSubmatch(m)
+		prefix := ""
+		suffix := ""
+		if len(m) > 0 && m[0] != '*' {
+			prefix = string(m[0])
+		}
+		if len(m) > 0 && m[len(m)-1] != '*' {
+			suffix = string(m[len(m)-1])
+		}
+		return prefix + mdStyleItalic.Render(sub[1]) + suffix
+	})
+	return s
 }
