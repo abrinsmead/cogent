@@ -345,6 +345,9 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 
 	if gitStr != "" {
 		left += sep + gitStr
+		if stat := gitDiffStat(cwd); stat != "" {
+			left += " " + stat
+		}
 	}
 
 	left += tuiStatusBar.Render(" ")
@@ -390,6 +393,9 @@ func (s *session) renderHUD(client *api.Client, cwd string) []string {
 	gitStr := renderGitStatus(cwd)
 	if gitStr != "" {
 		lines = append(lines, gitStr)
+		if stat := gitDiffStat(cwd); stat != "" {
+			lines = append(lines, tuiDim.Render("    dif ")+stat)
+		}
 	}
 
 	return lines

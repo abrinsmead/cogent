@@ -1845,7 +1845,7 @@ func renderGitStatus(cwd string) string {
 	}
 	dirty := gitDirty(cwd)
 	if dirty {
-		return tuiStatusBar.Render("git ") + tuiStatusGitDirty.Render(branch + "*")
+		return tuiStatusBar.Render("git ") + tuiStatusGitDirty.Render(branch+"*")
 	}
 	return tuiStatusBar.Render("git ") + tuiStatusGitClean.Render(branch)
 }
@@ -1891,6 +1891,48 @@ func findGitDir(dir string) string {
 		}
 		dir = parent
 	}
+}
+
+// gitDiffStat returns a styled "+N/-M" string summarising uncommitted changes
+// (both staged and unstaged). Returns "" when there are no changes or on error.
+func gitDiffStat(dir string) string {
+	// Unstaged changes
+	cmd := exec.Command("git", "diff", "--numstat")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// Staged changes
+	cmd2 := exec.Command("git", "diff", "--numstat", "--cached")
+	cmd2.Dir = dir
+	out2, _ := cmd2.Output()
+
+	var added, deleted int
+	for _, chunk := range [][]byte{out, out2} {
+		for _, line := range strings.Split(strings.TrimSpace(string(chunk)), "\n") {
+			if line == "" {
+				continue
+			}
+			// Format: "added<tab>deleted<tab>filename"
+			// Binary files show "-" for both counts; skip those.
+			parts := strings.SplitN(line, "\t", 3)
+			if len(parts) < 2 || parts[0] == "-" {
+				continue
+			}
+			a, d := 0, 0
+			fmt.Sscanf(parts[0], "%d", &a)
+			fmt.Sscanf(parts[1], "%d", &d)
+			added += a
+			deleted += d
+		}
+	}
+	if added == 0 && deleted == 0 {
+		return ""
+	}
+	return tuiGreen.Render(fmt.Sprintf("+%d", added)) +
+		tuiDim.Render("/") +
+		tuiRed.Render(fmt.Sprintf("-%d", deleted))
 }
 
 // ─── Formatting helpers ────────────────────────────────────────────────────
