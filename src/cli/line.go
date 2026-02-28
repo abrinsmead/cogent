@@ -163,7 +163,7 @@ func parseDiffInput(s string) map[string]any {
 }
 
 // renderMarkdown applies lightweight markdown styling using lipgloss.
-// Handles headings, bold, italic, inline code, fenced code blocks, and lists.
+// Handles headings, bold, italic, inline code, fenced code blocks, lists, and GFM tables.
 // No external dependencies — just regex + lipgloss.
 var (
 	mdBold       = regexp.MustCompile(`\*\*(.+?)\*\*`)
@@ -172,6 +172,8 @@ var (
 	mdHeading    = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
 	mdBullet     = regexp.MustCompile(`^(\s*)([-*+])\s+(.+)$`)
 	mdNumbered   = regexp.MustCompile(`^(\s*)(\d+\.)\s+(.+)$`)
+	mdTableRow   = regexp.MustCompile(`^\s*\|.*\|`)
+	mdTableSep   = regexp.MustCompile(`^\s*\|[ :-]+\|`)
 
 	mdStyleBold       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	mdStyleItalic     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("5"))
@@ -180,16 +182,27 @@ var (
 	mdStyleCodeBlock  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
 	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 	mdStyleText       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	mdStyleTableBorder = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	mdStyleTableHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 )
 
 func renderMarkdown(text string) string {
 	lines := strings.Split(text, "\n")
 	var out []string
 	inCode := false
+	var tableBuf []string // accumulates consecutive table lines
+
+	flushTable := func() {
+		if len(tableBuf) > 0 {
+			out = append(out, renderTable(tableBuf)...)
+			tableBuf = nil
+		}
+	}
 
 	for _, l := range lines {
 		// Fenced code blocks
 		if strings.HasPrefix(l, "```") {
+			flushTable()
 			inCode = !inCode
 			if inCode {
 				out = append(out, "")
@@ -202,6 +215,13 @@ func renderMarkdown(text string) string {
 			out = append(out, "  "+mdStyleCodeBlock.Render(l))
 			continue
 		}
+
+		// GFM table lines — accumulate and render as a batch
+		if mdTableRow.MatchString(l) {
+			tableBuf = append(tableBuf, l)
+			continue
+		}
+		flushTable()
 
 		// Headings
 		if m := mdHeading.FindStringSubmatch(l); m != nil {
@@ -225,8 +245,218 @@ func renderMarkdown(text string) string {
 
 		out = append(out, applyInlineStyles(l))
 	}
+	flushTable()
 
 	return strings.Join(out, "\n")
+}
+
+// parseTableCells splits a GFM table row into trimmed cell values.
+// "| a | b | c |" → ["a", "b", "c"]
+func parseTableCells(row string) []string {
+	row = strings.TrimSpace(row)
+	row = strings.TrimPrefix(row, "|")
+	row = strings.TrimSuffix(row, "|")
+	parts := strings.Split(row, "|")
+	cells := make([]string, len(parts))
+	for i, p := range parts {
+		cells[i] = strings.TrimSpace(p)
+	}
+	return cells
+}
+
+// renderTable converts accumulated GFM table lines into box-drawn output lines.
+// Expects at least a header row; the separator row (|---|---|) is detected and
+// skipped. Alignment markers (:---:, ---:, :---) are parsed from the separator.
+func renderTable(rows []string) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Parse all rows into cells, identifying the separator row.
+	type parsedRow struct {
+		cells    []string
+		isSep    bool
+		isHeader bool
+	}
+
+	var parsed []parsedRow
+	sepIdx := -1
+	for i, r := range rows {
+		cells := parseTableCells(r)
+		isSep := mdTableSep.MatchString(r) && allSeparatorCells(cells)
+		pr := parsedRow{cells: cells, isSep: isSep}
+		if isSep && sepIdx == -1 {
+			sepIdx = i
+		}
+		parsed = append(parsed, pr)
+	}
+
+	// Mark header rows (everything before the separator).
+	if sepIdx > 0 {
+		for i := 0; i < sepIdx; i++ {
+			parsed[i].isHeader = true
+		}
+	} else if sepIdx == -1 {
+		// No separator found — treat the first row as a header.
+		parsed[0].isHeader = true
+	}
+
+	// Parse alignment from separator row.
+	type alignment int
+	const (
+		alignLeft alignment = iota
+		alignCenter
+		alignRight
+	)
+	var aligns []alignment
+	if sepIdx >= 0 && sepIdx < len(parsed) {
+		for _, cell := range parsed[sepIdx].cells {
+			cell = strings.TrimSpace(cell)
+			left := strings.HasPrefix(cell, ":")
+			right := strings.HasSuffix(cell, ":")
+			switch {
+			case left && right:
+				aligns = append(aligns, alignCenter)
+			case right:
+				aligns = append(aligns, alignRight)
+			default:
+				aligns = append(aligns, alignLeft)
+			}
+		}
+	}
+
+	// Determine the number of columns and max width per column.
+	numCols := 0
+	for _, pr := range parsed {
+		if pr.isSep {
+			continue
+		}
+		if len(pr.cells) > numCols {
+			numCols = len(pr.cells)
+		}
+	}
+	if numCols == 0 {
+		return nil
+	}
+
+	colWidths := make([]int, numCols)
+	for _, pr := range parsed {
+		if pr.isSep {
+			continue
+		}
+		for j := 0; j < numCols && j < len(pr.cells); j++ {
+			w := lipgloss.Width(applyInlineStyles(pr.cells[j]))
+			if w > colWidths[j] {
+				colWidths[j] = w
+			}
+		}
+	}
+
+	// Ensure minimum column width of 3 for aesthetics.
+	for j := range colWidths {
+		if colWidths[j] < 3 {
+			colWidths[j] = 3
+		}
+	}
+
+	// Helper to get alignment for column j.
+	getAlign := func(j int) alignment {
+		if j < len(aligns) {
+			return aligns[j]
+		}
+		return alignLeft
+	}
+
+	// Build box-drawing borders.
+	border := mdStyleTableBorder
+	buildHLine := func(left, mid, right, fill string) string {
+		var b strings.Builder
+		b.WriteString(left)
+		for j, w := range colWidths {
+			b.WriteString(strings.Repeat(fill, w+2)) // 1 pad each side
+			if j < numCols-1 {
+				b.WriteString(mid)
+			}
+		}
+		b.WriteString(right)
+		return border.Render(b.String())
+	}
+
+	topBorder := buildHLine("╭", "┬", "╮", "─")
+	midBorder := buildHLine("├", "┼", "┤", "─")
+	botBorder := buildHLine("╰", "┴", "╯", "─")
+
+	// Render data rows.
+	renderDataRow := func(pr parsedRow) string {
+		var b strings.Builder
+		b.WriteString(border.Render("│"))
+		for j := 0; j < numCols; j++ {
+			cell := ""
+			if j < len(pr.cells) {
+				cell = pr.cells[j]
+			}
+			var styled string
+			if pr.isHeader {
+				styled = mdStyleTableHeader.Render(cell)
+			} else {
+				styled = applyInlineStyles(cell)
+			}
+			cellW := lipgloss.Width(styled)
+			pad := colWidths[j] - cellW
+			if pad < 0 {
+				pad = 0
+			}
+			switch getAlign(j) {
+			case alignRight:
+				b.WriteString(" " + strings.Repeat(" ", pad) + styled + " ")
+			case alignCenter:
+				lpad := pad / 2
+				rpad := pad - lpad
+				b.WriteString(" " + strings.Repeat(" ", lpad) + styled + strings.Repeat(" ", rpad) + " ")
+			default: // alignLeft
+				b.WriteString(" " + styled + strings.Repeat(" ", pad) + " ")
+			}
+			b.WriteString(border.Render("│"))
+		}
+		return b.String()
+	}
+
+	var out []string
+	out = append(out, noWrapMarker+topBorder)
+	needMid := false
+	for _, pr := range parsed {
+		if pr.isSep {
+			needMid = true
+			continue
+		}
+		if needMid {
+			out = append(out, noWrapMarker+midBorder)
+			needMid = false
+		}
+		out = append(out, noWrapMarker+renderDataRow(pr))
+	}
+	out = append(out, noWrapMarker+botBorder)
+
+	return out
+}
+
+// noWrapMarker is prefixed to rendered lines that must not be soft-wrapped.
+// refreshContent strips it and truncates instead of wrapping.
+const noWrapMarker = "\x01"
+
+// allSeparatorCells returns true if every cell looks like a separator (e.g. "---", ":--:", "---:").
+func allSeparatorCells(cells []string) bool {
+	for _, c := range cells {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		stripped := strings.Trim(c, ":- ")
+		if stripped != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // applyInlineStyles renders bold, italic, and inline code within a line.

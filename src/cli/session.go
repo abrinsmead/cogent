@@ -151,6 +151,8 @@ func (s *session) rebuildRendered() {
 
 // refreshContent re-wraps all rendered lines and updates the viewport.
 // Every non-empty line type gets a trailing blank line for visual spacing.
+// Lines prefixed with noWrapMarker (from tables, etc.) are truncated
+// instead of soft-wrapped so box-drawing structure is preserved.
 func (s *session) refreshContent() {
 	w := s.output.Width
 	if w < 1 {
@@ -162,11 +164,11 @@ func (s *session) refreshContent() {
 		// to separate them from compact tool call clusters.
 		if i < len(s.slines) {
 			t := s.slines[i].Type
-			if t == lineText || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm {
+			if t == lineText || t == linePrompt || t == lineShellPrompt || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm {
 				wrapped = append(wrapped, "")
 			}
 		}
-		wrapped = append(wrapped, ansi.Wrap(rl, w, ""))
+		wrapped = append(wrapped, wrapLine(rl, w))
 		// Add a blank line after most line types for spacing.
 		// Tool calls are compact — no trailing blank.
 		if i < len(s.slines) {
@@ -180,6 +182,27 @@ func (s *session) refreshContent() {
 	if !s.scrollback {
 		s.output.GotoBottom()
 	}
+}
+
+// wrapLine soft-wraps a rendered line, but truncates (instead of wrapping)
+// any sub-lines marked with noWrapMarker so tables and other structured
+// output keep their alignment.
+func wrapLine(rl string, w int) string {
+	// Fast path: no marker present — wrap the whole thing.
+	if !strings.Contains(rl, noWrapMarker) {
+		return ansi.Wrap(rl, w, "")
+	}
+	// Process sub-lines individually.
+	subLines := strings.Split(rl, "\n")
+	for i, sl := range subLines {
+		if strings.HasPrefix(sl, noWrapMarker) {
+			sl = strings.TrimPrefix(sl, noWrapMarker)
+			subLines[i] = ansi.Truncate(sl, w, "")
+		} else {
+			subLines[i] = ansi.Wrap(sl, w, "")
+		}
+	}
+	return strings.Join(subLines, "\n")
 }
 
 // recalcInputHeight computes how many visual lines the input occupies.

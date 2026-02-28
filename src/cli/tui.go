@@ -38,7 +38,7 @@ var (
 
 	tuiPrompt = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("2"))
+			Foreground(lipgloss.Color("6"))
 
 	tuiStatus = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8"))
@@ -1746,8 +1746,16 @@ func (m *tuiModel) scrollTabsToActive() {
 	m.ensureActiveTabVisible(innerWidth)
 }
 
-// resizeAll updates the layout for the active session based on current terminal size.
+// resizeAll updates the layout for all sessions based on current terminal size.
+// The active session gets a full resize (width + height accounting for its chrome);
+// background sessions get their width updated so refreshContent wraps/truncates
+// correctly, but their viewport height is deferred until they become active.
 func (m *tuiModel) resizeAll() {
+	for _, s := range m.sessions {
+		s.output.Width = m.width
+		s.input.SetWidth(m.width - 2)
+	}
+	// Full height layout for the active session.
 	s := m.cur()
 	// Layout (rows below the viewport):
 	//   1  blank line
