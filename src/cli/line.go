@@ -33,6 +33,7 @@ const (
 	lineConfirmDenyInt lineType = "deny_int"   // "✗ denied (interrupted)"
 	lineConfirmAlways  lineType = "always"     // "✓ always allow X": Data = tool name
 	lineCompaction     lineType = "compact"    // "⚡ context compacted"
+	lineToolsLoaded    lineType = "tools"      // active custom tools: Data = "name1, name2, ..."
 	linePlanConfirm    lineType = "planconf"   // "Switch to Confirm mode and execute? [Y/n]"
 	lineError          lineType = "error"      // agent/shell error (yellow)
 )
@@ -126,6 +127,14 @@ func renderLine(l line) string {
 
 	case lineCompaction:
 		return tuiDim.Render("  ⚡ context compacted")
+
+	case lineToolsLoaded:
+		names := strings.Split(l.Data, ", ")
+		var styled []string
+		for _, name := range names {
+			styled = append(styled, tuiGreen.Render(name))
+		}
+		return tuiDim.Render("  tools ") + strings.Join(styled, tuiDim.Render(", "))
 
 	case linePlanConfirm:
 		return tuiYellow.Render("Switch to Confirm mode and execute? [Y/n] ")
