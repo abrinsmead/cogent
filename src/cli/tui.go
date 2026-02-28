@@ -1893,7 +1893,7 @@ func findGitDir(dir string) string {
 }
 
 // gitDiffStat returns a styled "+N/-M" string summarising uncommitted changes
-// (both staged and unstaged). Returns "" when there are no changes or on error.
+// (staged, unstaged, and untracked files). Returns "" when there are no changes or on error.
 func gitDiffStat(dir string) string {
 	// Unstaged changes
 	cmd := exec.Command("git", "diff", "--numstat")
@@ -1926,6 +1926,26 @@ func gitDiffStat(dir string) string {
 			deleted += d
 		}
 	}
+
+	// Untracked files — count their lines as additions.
+	cmd3 := exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	cmd3.Dir = dir
+	if out3, err := cmd3.Output(); err == nil {
+		for _, f := range strings.Split(strings.TrimSpace(string(out3)), "\n") {
+			if f == "" {
+				continue
+			}
+			// wc -l equivalent: count newlines in the file
+			wc := exec.Command("wc", "-l", f)
+			wc.Dir = dir
+			if wcOut, err := wc.Output(); err == nil {
+				n := 0
+				fmt.Sscanf(strings.TrimSpace(string(wcOut)), "%d", &n)
+				added += n
+			}
+		}
+	}
+
 	if added == 0 && deleted == 0 {
 		return ""
 	}
