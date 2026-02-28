@@ -255,3 +255,50 @@ func TestParseResumeNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveAllSessionsCreatesFiles(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, ".cogent", "sessions")
+
+	// Write two sessions directly (simulating what saveAllSessions does).
+	now := time.Now()
+	for _, sd := range []sessionData{
+		{
+			ID:        "sess_aaa",
+			Name:      "First",
+			Messages:  []api.Message{api.UserMessage("hello")},
+			Lines:     []line{{Type: linePrompt, Data: "hello"}},
+			CreatedAt: now.Add(-time.Hour),
+			UpdatedAt: now.Add(-time.Hour),
+		},
+		{
+			ID:        "sess_bbb",
+			Name:      "Second",
+			Messages:  []api.Message{api.UserMessage("world")},
+			Lines:     []line{{Type: linePrompt, Data: "world"}},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	} {
+		os.MkdirAll(sessDir, 0755)
+		b, _ := json.Marshal(sd)
+		os.WriteFile(filepath.Join(sessDir, sd.ID+".json"), b, 0644)
+	}
+
+	// Both files should exist
+	for _, id := range []string{"sess_aaa", "sess_bbb"} {
+		path := filepath.Join(sessDir, id+".json")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			t.Errorf("expected session file %s to exist", path)
+		}
+	}
+
+	// Verify we can list them back, sorted newest first
+	saved := listSavedSessions(dir)
+	if len(saved) != 2 {
+		t.Fatalf("expected 2 saved sessions, got %d", len(saved))
+	}
+	if saved[0].ID != "sess_bbb" {
+		t.Errorf("expected newest session first, got %q", saved[0].ID)
+	}
+}

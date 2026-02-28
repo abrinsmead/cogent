@@ -264,14 +264,25 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		hudMode:        loadHUDMode(cwd),
 	}
 
-	// Create the initial default session
-	s := newSession(m.nextID, client, cwd, msgCh)
-	m.nextID++
-	m.sessions = []*session{s}
-	m.active = 0
-
-	// Wire up dispatch spawn for the initial session
-	m.wireDispatch(s)
+	// Auto-restore saved sessions from disk
+	saved := listSavedSessions(cwd)
+	if len(saved) > 0 {
+		// Restore sessions: saved is sorted newest-first, so iterate
+		// in forward order to get most-recent as the first tab.
+		m.sessions = nil
+		for i := range saved {
+			sd := saved[i]
+			m.resumeSession(&sd, true)
+		}
+		m.active = 0
+	} else {
+		// No saved sessions — create a fresh default session
+		s := newSession(m.nextID, client, cwd, msgCh)
+		m.nextID++
+		m.sessions = []*session{s}
+		m.active = 0
+		m.wireDispatch(s)
+	}
 
 	return m
 }
@@ -584,6 +595,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
 				return m, nil
 			}
+			m.saveAllSessions()
 			m.quitting = true
 			return m, tea.Quit
 		default:
@@ -698,6 +710,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
 			return m, nil
 		}
+		m.saveAllSessions()
 		m.quitting = true
 		return m, tea.Quit
 
@@ -714,6 +727,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Check for commands
 		switch {
 		case value == "/quit" || value == "/exit" || value == "/q":
+			m.saveAllSessions()
 			m.quitting = true
 			return m, tea.Quit
 
@@ -1111,7 +1125,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	// Resume the session
-	resumed := m.resumeSession(target)
+	resumed := m.resumeSession(target, false)
 	m.active = len(m.sessions) - 1
 	m.resizeAll()
 	m.scrollTabsToActive()
@@ -1122,7 +1136,8 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 
 // resumeSession creates a new tab from saved session data, restoring
 // conversation history, display lines, and metadata.
-func (m *tuiModel) resumeSession(data *sessionData) *session {
+// If quiet is true, the "↩ session resumed" info line is suppressed.
+func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
 	m.nextID++
 	m.wireDispatch(s)
@@ -1156,7 +1171,9 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 	// Restore display lines
 	s.slines = data.Lines
 	s.rebuildRendered()
-	s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
+	if !quiet {
+		s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
+	}
 
 	// Remove from disk — it's now active and will be saved on close/done
 	deleteSessionFile(m.cwd, data.ID)
@@ -1644,6 +1661,13 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 }
 
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
+
+// saveAllSessions persists every open session to disk.
+func (m *tuiModel) saveAllSessions() {
+	for _, s := range m.sessions {
+		saveSession(m.cwd, s)
+	}
+}
 
 // scrollTabsToActive ensures the active tab (or new-tab button) is visible.
 func (m *tuiModel) scrollTabsToActive() {
