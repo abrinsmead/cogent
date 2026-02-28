@@ -17,6 +17,7 @@ type sessionData struct {
 	ID             string        `json:"id"`
 	Name           string        `json:"name"`
 	NameSet        bool          `json:"name_set,omitempty"`
+	TabOrder       int           `json:"tab_order"`        // 0 = no tab (closed), 1+ = tab position
 	Messages       []api.Message `json:"messages,omitempty"`
 	PermissionMode string        `json:"permission_mode"`
 	AllowedTools   []string      `json:"allowed_tools,omitempty"`
@@ -38,8 +39,9 @@ func sessionFilePath(cwd, persistID string) string {
 }
 
 // saveSession persists the session to .cogent/sessions/<persistID>.json.
+// tabOrder is the 1-based tab position (0 = not in a tab).
 // Sessions with no conversation history are not saved.
-func saveSession(cwd string, s *session) error {
+func saveSession(cwd string, s *session, tabOrder int) error {
 	if len(s.agent.Messages()) == 0 {
 		return nil
 	}
@@ -54,6 +56,7 @@ func saveSession(cwd string, s *session) error {
 		ID:             s.persistID,
 		Name:           s.name,
 		NameSet:        s.nameSet,
+		TabOrder:       tabOrder,
 		Messages:       s.agent.Messages(),
 		PermissionMode: s.agent.GetPermissionMode().String(),
 		AllowedTools:   mapKeys(s.agent.AllowedTools()),

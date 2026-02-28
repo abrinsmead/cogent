@@ -264,19 +264,27 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		hudMode:        loadHUDMode(cwd),
 	}
 
-	// Auto-restore saved sessions from disk
+	// Auto-restore saved sessions that had open tabs.
 	saved := listSavedSessions(cwd)
-	if len(saved) > 0 {
-		// Restore sessions: saved is sorted newest-first, so iterate
-		// in forward order to get most-recent as the first tab.
+	var tabSessions []sessionData
+	for _, sd := range saved {
+		if sd.TabOrder > 0 {
+			tabSessions = append(tabSessions, sd)
+		}
+	}
+	// Sort by TabOrder to restore original tab positions.
+	sort.Slice(tabSessions, func(i, j int) bool {
+		return tabSessions[i].TabOrder < tabSessions[j].TabOrder
+	})
+	if len(tabSessions) > 0 {
 		m.sessions = nil
-		for i := range saved {
-			sd := saved[i]
+		for i := range tabSessions {
+			sd := tabSessions[i]
 			m.resumeSession(&sd, true)
 		}
 		m.active = 0
 	} else {
-		// No saved sessions — create a fresh default session
+		// No saved tab sessions — create a fresh default session
 		s := newSession(m.nextID, client, cwd, msgCh)
 		m.nextID++
 		m.sessions = []*session{s}
@@ -991,7 +999,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, textarea.Blink)
 		}
 		cmds = append(cmds, notifyCmd(s.name+" is done"))
-		saveSession(m.cwd, s)
+		saveSession(m.cwd, s, m.tabOrderOf(s))
 
 	case tuiShellDoneMsg:
 		s.state = tuiStateInput
@@ -1015,7 +1023,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
-		saveSession(m.cwd, s)
+		saveSession(m.cwd, s, m.tabOrderOf(s))
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1042,7 +1050,7 @@ func (m *tuiModel) switchToSession(idx int) {
 // closeCurrentSession saves and closes the active session tab.
 func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if len(m.sessions) == 1 {
-		saveSession(m.cwd, m.cur())
+		saveSession(m.cwd, m.cur(), 0)
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -1050,7 +1058,7 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
-	saveSession(m.cwd, s)
+	saveSession(m.cwd, s, 0)
 	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
 	if m.active >= len(m.sessions) {
 		m.active = len(m.sessions) - 1
@@ -1070,14 +1078,10 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 	s := m.cur()
 	saved := listSavedSessions(m.cwd)
 
-	// Filter out sessions that are already open as tabs.
-	openIDs := make(map[string]bool)
-	for _, sess := range m.sessions {
-		openIDs[sess.persistID] = true
-	}
+	// Filter to sessions not in a tab (TabOrder == 0).
 	var available []sessionData
 	for _, sd := range saved {
-		if !openIDs[sd.ID] {
+		if sd.TabOrder == 0 {
 			available = append(available, sd)
 		}
 	}
@@ -1170,8 +1174,8 @@ func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 		s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
 	}
 
-	// Remove from disk — it's now active and will be saved on close/done
-	deleteSessionFile(m.cwd, data.ID)
+	// Save with updated tab order (now has a tab)
+	saveSession(m.cwd, s, len(m.sessions))
 
 	return s
 }
@@ -1657,11 +1661,21 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
 
-// saveAllSessions persists every open session to disk.
+// saveAllSessions persists every open session to disk with its tab position.
 func (m *tuiModel) saveAllSessions() {
-	for _, s := range m.sessions {
-		saveSession(m.cwd, s)
+	for i, s := range m.sessions {
+		saveSession(m.cwd, s, i+1) // 1-based tab order
 	}
+}
+
+// tabOrderOf returns the 1-based tab position of a session, or 0 if not found.
+func (m *tuiModel) tabOrderOf(s *session) int {
+	for i, sess := range m.sessions {
+		if sess.id == s.id {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // scrollTabsToActive ensures the active tab (or new-tab button) is visible.

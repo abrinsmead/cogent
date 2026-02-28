@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ func TestSessionDataRoundTrip(t *testing.T) {
 		ID:             "abc12345",
 		Name:           "Test Session",
 		NameSet:        true,
+		TabOrder:       2,
 		PermissionMode: "Confirm",
 		AllowedTools:   []string{"bash"},
 		TotalCost:      0.42,
@@ -55,6 +57,9 @@ func TestSessionDataRoundTrip(t *testing.T) {
 	}
 	if got.NameSet != sd.NameSet {
 		t.Errorf("NameSet = %v, want %v", got.NameSet, sd.NameSet)
+	}
+	if got.TabOrder != sd.TabOrder {
+		t.Errorf("TabOrder = %d, want %d", got.TabOrder, sd.TabOrder)
 	}
 	if got.PermissionMode != sd.PermissionMode {
 		t.Errorf("PermissionMode = %q, want %q", got.PermissionMode, sd.PermissionMode)
@@ -300,5 +305,59 @@ func TestSaveAllSessionsCreatesFiles(t *testing.T) {
 	}
 	if saved[0].ID != "sess_bbb" {
 		t.Errorf("expected newest session first, got %q", saved[0].ID)
+	}
+}
+
+func TestTabOrderFiltering(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, ".cogent", "sessions")
+	os.MkdirAll(sessDir, 0755)
+
+	now := time.Now()
+	sessions := []sessionData{
+		{ID: "tab1", Name: "Tab One", TabOrder: 2, UpdatedAt: now.Add(-time.Minute)},
+		{ID: "tab2", Name: "Tab Two", TabOrder: 1, UpdatedAt: now},
+		{ID: "closed1", Name: "Closed", TabOrder: 0, UpdatedAt: now.Add(-time.Hour)},
+	}
+	for _, sd := range sessions {
+		b, _ := json.Marshal(sd)
+		os.WriteFile(filepath.Join(sessDir, sd.ID+".json"), b, 0644)
+	}
+
+	saved := listSavedSessions(dir)
+	if len(saved) != 3 {
+		t.Fatalf("expected 3 sessions, got %d", len(saved))
+	}
+
+	// Filter to tab sessions and sort by TabOrder
+	var tabSessions []sessionData
+	var closedSessions []sessionData
+	for _, sd := range saved {
+		if sd.TabOrder > 0 {
+			tabSessions = append(tabSessions, sd)
+		} else {
+			closedSessions = append(closedSessions, sd)
+		}
+	}
+
+	if len(tabSessions) != 2 {
+		t.Fatalf("expected 2 tab sessions, got %d", len(tabSessions))
+	}
+	if len(closedSessions) != 1 {
+		t.Fatalf("expected 1 closed session, got %d", len(closedSessions))
+	}
+	if closedSessions[0].ID != "closed1" {
+		t.Errorf("expected closed session ID=closed1, got %q", closedSessions[0].ID)
+	}
+
+	// Sort tab sessions by TabOrder
+	sort.Slice(tabSessions, func(i, j int) bool {
+		return tabSessions[i].TabOrder < tabSessions[j].TabOrder
+	})
+	if tabSessions[0].ID != "tab2" {
+		t.Errorf("expected first tab ID=tab2 (order 1), got %q (order %d)", tabSessions[0].ID, tabSessions[0].TabOrder)
+	}
+	if tabSessions[1].ID != "tab1" {
+		t.Errorf("expected second tab ID=tab1 (order 2), got %q (order %d)", tabSessions[1].ID, tabSessions[1].TabOrder)
 	}
 }
