@@ -184,7 +184,7 @@ const (
 	tuiStateInput       tuiState = iota
 	tuiStateRunning
 	tuiStateConfirm
-	tuiStateLinear
+	tuiStateTasks
 	tuiStatePlanConfirm // "Switch to Confirm mode and execute?" prompt after planning
 )
 
@@ -607,7 +607,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					s.cancelFn()
 					s.cancelFn = nil
 				}
-				s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
+				s.appendLine(line{Type: lineInfo, Data: "  (interrupted with ctrl+c)"})
 				return m, nil
 			}
 			m.saveAllSessions()
@@ -625,7 +625,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab key toggles focus to the tab bar
-	if msg.Type == tea.KeyTab && !m.tabFocused && s.state != tuiStateLinear {
+	if msg.Type == tea.KeyTab && !m.tabFocused && s.state != tuiStateTasks {
 		m.tabFocused = true
 		s.input.Blur()
 		return m, nil
@@ -675,13 +675,13 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.scrollback = !s.output.AtBottom()
 		return m, nil
 	case tea.KeyUp:
-		if s.state != tuiStateInput && s.state != tuiStateLinear {
+		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollUp(3)
 			s.scrollback = true
 			return m, nil
 		}
 	case tea.KeyDown:
-		if s.state != tuiStateInput && s.state != tuiStateLinear {
+		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
 			return m, nil
@@ -707,8 +707,8 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirm(msg)
 	case tuiStatePlanConfirm:
 		return m.handlePlanConfirm(msg)
-	case tuiStateLinear:
-		return m.handleLinear(msg)
+	case tuiStateTasks:
+		return m.handleTasks(msg)
 	default:
 		return m.handleInput(msg)
 	}
@@ -744,7 +744,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.cancelFn()
 				s.cancelFn = nil
 			}
-			s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
+			s.appendLine(line{Type: lineInfo, Data: "  (interrupted with ctrl+c)"})
 			return m, nil
 		}
 		m.saveAllSessions()
@@ -808,7 +808,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /linear (/lin)"})
+			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /tasks /linear (/lin)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
@@ -819,9 +819,9 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"})
 			return m, nil
 
-		case value == "/linear" || value == "/lin":
-			s.linear = newLinearModal(m.width, m.height)
-			s.state = tuiStateLinear
+		case value == "/tasks" || value == "/linear" || value == "/lin":
+			s.taskModal = newTaskModal(detectTaskProvider(), m.width, m.height)
+			s.state = tuiStateTasks
 			s.input.Blur()
 			return m, nil
 
@@ -957,10 +957,10 @@ func (m *tuiModel) handlePlanConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleLinear processes key events while the Linear ticket browser is open.
-func (m *tuiModel) handleLinear(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleTasks processes key events while the task browser modal is open.
+func (m *tuiModel) handleTasks(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
-	if s.linear == nil {
+	if s.taskModal == nil {
 		s.state = tuiStateInput
 		s.input.Focus()
 		return m, nil
@@ -969,40 +969,40 @@ func (m *tuiModel) handleLinear(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
 		// Check if we're already at the top level before calling back
-		atTopLevel := !s.linear.showDetail && !(s.linear.view == linearViewProject && s.linear.inProject)
+		atTopLevel := !s.taskModal.showDetail && s.taskModal.groupKey == ""
 		if atTopLevel {
 			// Close the modal
-			s.linear = nil
+			s.taskModal = nil
 			s.state = tuiStateInput
 			s.input.Focus()
 			return m, textarea.Blink
 		}
-		s.linear.back()
+		s.taskModal.back()
 		return m, nil
 
 	case tea.KeyUp:
-		s.linear.up()
+		s.taskModal.up()
 		return m, nil
 
 	case tea.KeyDown:
-		s.linear.down()
+		s.taskModal.down()
 		return m, nil
 
 	case tea.KeyTab:
-		s.linear.switchView()
+		s.taskModal.switchView()
 		return m, nil
 
 	case tea.KeyBackspace:
-		s.linear.back()
+		s.taskModal.back()
 		return m, nil
 
 	case tea.KeyEnter:
 		// If viewing detail, insert into prompt
-		if s.linear.showDetail {
-			t := s.linear.selectedTicket()
+		if s.taskModal.showDetail {
+			t := s.taskModal.selectedItem()
 			if t != nil {
-				text := formatTicketForPrompt(t)
-				s.linear = nil
+				text := formatTaskForPrompt(t)
+				s.taskModal = nil
 				s.state = tuiStateInput
 				s.input.Focus()
 				s.input.SetValue(text)
@@ -1010,11 +1010,11 @@ func (m *tuiModel) handleLinear(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		s.linear.enter()
+		s.taskModal.enter()
 		return m, nil
 
 	case tea.KeyCtrlC:
-		s.linear = nil
+		s.taskModal = nil
 		s.state = tuiStateInput
 		s.input.Focus()
 		return m, textarea.Blink
@@ -1449,7 +1449,7 @@ func (m tuiModel) View() string {
 
 	// Modal overlay — centered in the viewport area
 	if hasModal(s) {
-		if s.linear != nil {
+		if s.taskModal != nil {
 			mw := m.width * 80 / 100
 			if mw > 100 {
 				mw = 100
@@ -1458,9 +1458,9 @@ func (m tuiModel) View() string {
 			if mh > 30 {
 				mh = 30
 			}
-			s.linear.width = mw
-			s.linear.height = mh
-			modalStr := s.linear.render()
+			s.taskModal.width = mw
+			s.taskModal.height = mh
+			modalStr := s.taskModal.render()
 			view = overlayModal(dimView(view), modalStr, m.width, m.height)
 		}
 	}

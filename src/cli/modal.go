@@ -61,7 +61,7 @@ func overlayModal(base, modal string, totalWidth, totalHeight int) string {
 
 // hasModal returns true if the session has any modal open.
 func hasModal(s *session) bool {
-	return s.state == tuiStateLinear && s.linear != nil
+	return s.state == tuiStateTasks && s.taskModal != nil
 }
 
 // dimView re-renders every line in dim grey (color 8), stripping existing ANSI

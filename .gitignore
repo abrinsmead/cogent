@@ -2,3 +2,4 @@ bin/
 .cogent/.env
 .cogent/settings
 .cogent/sessions/
+cogent.log

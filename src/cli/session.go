@@ -41,8 +41,8 @@ type session struct {
 	inputHeight int
 	scrollback  bool
 
-	// Linear ticket browser
-	linear *linearModal
+	// Task browser modal
+	taskModal *taskModal
 
 	// Status bar stats (per-session)
 	contextUsed int
