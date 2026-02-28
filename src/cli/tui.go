@@ -1236,13 +1236,8 @@ func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 	// Restore agent state
 	s.agent.SetMessages(data.Messages)
 	s.agent.SetPermissionMode(parseModeString(data.PermissionMode))
-	if len(data.AllowedTools) > 0 {
-		allowed := make(map[string]bool)
-		for _, name := range data.AllowedTools {
-			allowed[name] = true
-		}
-		s.agent.SetAllowedTools(allowed)
-	}
+	// Reset always-allow flags — don't carry over from previous runs
+	// since the user may have forgotten what they allowed.
 
 	// Restore input prompt style for terminal mode
 	if s.agent.GetPermissionMode() == agent.ModeTerminal {
@@ -1255,6 +1250,10 @@ func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 	s.rebuildRendered()
 	if !quiet {
 		s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
+	}
+	// Show active custom tools on rehydration
+	if names := s.agent.Registry().CustomToolNames(); len(names) > 0 {
+		s.appendLine(line{Type: lineInfo, Data: "tools: " + strings.Join(names, ", ")})
 	}
 
 	// Save with updated tab order (now has a tab)

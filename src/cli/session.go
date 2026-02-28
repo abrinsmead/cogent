@@ -113,6 +113,11 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 	s.slines = []line{{}}
 	s.rlines = []string{""}
 
+	// Show active custom tools at startup
+	if names := s.agent.Registry().CustomToolNames(); len(names) > 0 {
+		s.appendLine(line{Type: lineInfo, Data: "tools: " + strings.Join(names, ", ")})
+	}
+
 	return s
 }
 

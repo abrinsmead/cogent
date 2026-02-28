@@ -24,8 +24,9 @@ type ConcurrentTool interface {
 }
 
 type Registry struct {
-	tools    map[string]Tool
-	warnings []string // warnings from custom tool loading
+	tools       map[string]Tool
+	customNames []string // names of successfully loaded custom tools
+	warnings    []string // warnings from custom tool loading
 }
 
 func NewRegistry(cwd string) *Registry {
@@ -62,6 +63,7 @@ func NewRegistry(cwd string) *Registry {
 				continue
 			}
 			r.Register(t)
+			r.customNames = append(r.customNames, name)
 		}
 	}
 
@@ -106,4 +108,12 @@ func (r *Registry) Definitions() []api.ToolDef {
 // (e.g. missing required env vars, parse errors).
 func (r *Registry) Warnings() []string {
 	return r.warnings
+}
+
+// CustomToolNames returns the names of successfully loaded custom tools, sorted.
+func (r *Registry) CustomToolNames() []string {
+	names := make([]string, len(r.customNames))
+	copy(names, r.customNames)
+	sort.Strings(names)
+	return names
 }
