@@ -142,11 +142,11 @@ func (c *Client) CostForUsage(u Usage) float64 {
 	return input + output + cacheHits + cacheCreation
 }
 
-func (c *Client) SendMessage(system string, messages []Message, tools []ToolDef) (*Response, error) {
+func (c *Client) SendMessage(system string, messages []Message, tools []any) (*Response, error) {
 	return c.SendMessageCtx(context.Background(), system, messages, tools, nil)
 }
 
-func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []ToolDef, thinking *ThinkingConfig) (*Response, error) {
+func (c *Client) SendMessageCtx(ctx context.Context, system string, messages []Message, tools []any, thinking *ThinkingConfig) (*Response, error) {
 	// Build system prompt as a content block array.
 	var sysBlocks []SystemBlock
 	if system != "" {

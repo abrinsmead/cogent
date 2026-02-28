@@ -250,7 +250,9 @@ func (a *Agent) loop(ctx context.Context) error {
 			}
 		}
 
-		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, a.registry.Definitions(), thinking)
+		tools := a.registry.Definitions()
+		tools = append(tools, api.ServerTool{Type: "web_search_20250305", Name: "web_search"})
+		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, tools, thinking)
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
 		}
@@ -285,6 +287,12 @@ func (a *Agent) loop(ctx context.Context) error {
 				// the API will drop all content before them automatically.
 			case "tool_use":
 				toolBlocks = append(toolBlocks, block)
+			case "server_tool_use":
+				if q, ok := block.Input["query"].(string); ok {
+					a.onTool("web_search", q)
+				}
+			case "web_search_tool_result":
+				a.onToolResult("web_search", fmt.Sprintf("%d results", len(block.SearchContent)), false)
 			}
 		}
 

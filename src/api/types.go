@@ -20,17 +20,59 @@ const (
 	StopCompaction StopReason = "compaction"
 )
 
+// WebSearchResult is a single result within a web_search_tool_result content block.
+type WebSearchResult struct {
+	Type             string `json:"type"`
+	Title            string `json:"title"`
+	URL              string `json:"url"`
+	EncryptedContent string `json:"encrypted_content"`
+	PageAge          string `json:"page_age,omitempty"`
+}
+
 type ContentBlock struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text"`
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Input     map[string]any `json:"input"`
-	ToolUseID string         `json:"tool_use_id"`
-	Content   string         `json:"content"`
-	IsError   bool           `json:"is_error"`
-	Thinking  string         `json:"thinking"`  // extended thinking content
-	Signature string         `json:"signature"` // opaque signature for thinking blocks (required by API)
+	Type          string            `json:"type"`
+	Text          string            `json:"text"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Input         map[string]any    `json:"input"`
+	ToolUseID     string            `json:"tool_use_id"`
+	Content       string            `json:"content"`
+	IsError       bool              `json:"is_error"`
+	Thinking      string            `json:"thinking"`  // extended thinking content
+	Signature     string            `json:"signature"` // opaque signature for thinking blocks (required by API)
+	SearchContent []WebSearchResult `json:"-"`          // parsed from web_search_tool_result.content
+}
+
+// UnmarshalJSON handles polymorphic "content" field: string for tool_result,
+// array of WebSearchResult for web_search_tool_result.
+func (cb *ContentBlock) UnmarshalJSON(data []byte) error {
+	// Use a type alias to avoid infinite recursion.
+	type Alias ContentBlock
+	aux := &struct {
+		*Alias
+		Content json.RawMessage `json:"content"`
+	}{
+		Alias: (*Alias)(cb),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Content) > 0 {
+		// Try to parse as array (web_search_tool_result).
+		if aux.Content[0] == '[' {
+			var results []WebSearchResult
+			if err := json.Unmarshal(aux.Content, &results); err == nil {
+				cb.SearchContent = results
+				return nil
+			}
+		}
+		// Otherwise parse as string (tool_result, compaction).
+		var s string
+		if err := json.Unmarshal(aux.Content, &s); err == nil {
+			cb.Content = s
+		}
+	}
+	return nil
 }
 
 // MarshalJSON produces deterministic JSON output. Go maps have random
@@ -41,10 +83,22 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 	switch cb.Type {
 	case "tool_use":
 		return json.Marshal(struct {
-			Type  string         `json:"type"`
-			ID    string         `json:"id"`
-			Name  string         `json:"name"`
-			Input orderedMap     `json:"input"`
+			Type  string     `json:"type"`
+			ID    string     `json:"id"`
+			Name  string     `json:"name"`
+			Input orderedMap `json:"input"`
+		}{
+			Type:  cb.Type,
+			ID:    cb.ID,
+			Name:  cb.Name,
+			Input: newOrderedMap(cb.Input),
+		})
+	case "server_tool_use":
+		return json.Marshal(struct {
+			Type  string     `json:"type"`
+			ID    string     `json:"id"`
+			Name  string     `json:"name"`
+			Input orderedMap `json:"input"`
 		}{
 			Type:  cb.Type,
 			ID:    cb.ID,
@@ -65,6 +119,12 @@ func (cb ContentBlock) MarshalJSON() ([]byte, error) {
 			ToolUseID string `json:"tool_use_id"`
 			Content   string `json:"content"`
 		}{cb.Type, cb.ToolUseID, cb.Content})
+	case "web_search_tool_result":
+		return json.Marshal(struct {
+			Type      string            `json:"type"`
+			ToolUseID string            `json:"tool_use_id"`
+			Content   []WebSearchResult `json:"content"`
+		}{cb.Type, cb.ToolUseID, cb.SearchContent})
 	case "thinking":
 		return json.Marshal(struct {
 			Type      string `json:"type"`
@@ -203,6 +263,14 @@ type ToolDef struct {
 	InputSchema ToolInputSchema `json:"input_schema"`
 }
 
+// ServerTool represents an Anthropic server-side tool (e.g. web search).
+// These are included alongside user-defined ToolDefs in the tools array.
+type ServerTool struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	MaxUses int    `json:"max_uses,omitempty"`
+}
+
 // SystemBlock is a content block within the system prompt array.
 type SystemBlock struct {
 	Type string `json:"type"`
@@ -221,7 +289,7 @@ type Request struct {
 	CacheControl      *CacheControl      `json:"cache_control,omitempty"`
 	System            []SystemBlock      `json:"system,omitempty"`
 	Messages          []Message          `json:"messages"`
-	Tools             []ToolDef          `json:"tools,omitempty"`
+	Tools             []any              `json:"tools,omitempty"`
 	Thinking          *ThinkingConfig    `json:"thinking,omitempty"`
 	ContextManagement *ContextManagement `json:"context_management,omitempty"`
 }

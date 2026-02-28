@@ -1,6 +1,0 @@
-#!/bin/bash
-# @tool weather
-# @description Get the current weather in San Francisco
-# @noconfirm
-
-curl -s "wttr.in/San+Francisco?format=%C+%t+%h+%w&m" 2>/dev/null || echo "Failed to fetch weather"

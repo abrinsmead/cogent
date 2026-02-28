@@ -93,7 +93,7 @@ func (r *Registry) Get(name string) (Tool, error) {
 	return t, nil
 }
 
-func (r *Registry) Definitions() []api.ToolDef {
+func (r *Registry) Definitions() []any {
 	defs := make([]api.ToolDef, 0, len(r.tools))
 	for _, t := range r.tools {
 		defs = append(defs, t.Definition())
@@ -101,7 +101,11 @@ func (r *Registry) Definitions() []api.ToolDef {
 	sort.Slice(defs, func(i, j int) bool {
 		return defs[i].Name < defs[j].Name
 	})
-	return defs
+	result := make([]any, len(defs))
+	for i, d := range defs {
+		result[i] = d
+	}
+	return result
 }
 
 // Warnings returns any warnings generated during custom tool discovery
