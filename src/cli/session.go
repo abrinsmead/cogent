@@ -167,10 +167,15 @@ func (s *session) refreshContent() {
 	for i, rl := range s.rlines {
 		// Add a leading blank line before messages and confirmations
 		// to separate them from compact tool call clusters.
+		// Skip when the previous line is the same type (e.g. consecutive
+		// text blocks from web search) — the trailing blank already provides spacing.
 		if i < len(s.slines) {
 			t := s.slines[i].Type
 			if t == lineText || t == linePrompt || t == lineShellPrompt || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm {
-				wrapped = append(wrapped, "")
+				prevSameType := i > 0 && i-1 < len(s.slines) && s.slines[i-1].Type == t
+				if !prevSameType {
+					wrapped = append(wrapped, "")
+				}
 			}
 		}
 		wrapped = append(wrapped, wrapLine(rl, w))
