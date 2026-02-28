@@ -1728,16 +1728,14 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	midRow := midBuf.String()
 	botRow := botBuf.String()
 
-	if m.tabFocused {
-		hint := "  ←/→ navigate  enter select  esc return"
-		midRowWidth := lipgloss.Width(midRow)
-		remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
-		if remaining >= 4 {
-			if len(hint) > remaining {
-				hint = hint[:remaining]
-			}
-			midRow += tuiDim.Render(hint)
+	hint := "  ←/→ navigate  enter select  esc return"
+	midRowWidth := lipgloss.Width(midRow)
+	remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
+	if remaining >= 4 {
+		if len(hint) > remaining {
+			hint = hint[:remaining]
 		}
+		midRow += tuiDim.Render(hint)
 	}
 
 	return mergedBorder, midRow + "\n" + botRow

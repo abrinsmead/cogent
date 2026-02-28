@@ -404,7 +404,7 @@ func (s *session) renderHUD(client *api.Client, cwd string) []string {
 	if gitStr != "" {
 		lines = append(lines, gitStr)
 		if stat := gitDiffStat(cwd); stat != "" {
-			lines = append(lines, tuiDim.Render("    dif ")+stat)
+			lines = append(lines, tuiDim.Render("dif ")+stat)
 		}
 	}
 
