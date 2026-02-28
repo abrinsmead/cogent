@@ -170,10 +170,10 @@ func (s *session) refreshContent() {
 		}
 		wrapped = append(wrapped, wrapLine(rl, w))
 		// Add a blank line after most line types for spacing.
-		// Tool calls are compact — no trailing blank.
+		// Tool calls and shell output lines are compact — no trailing blank.
 		if i < len(s.slines) {
 			t := s.slines[i].Type
-			if t != lineEmpty && t != lineTool {
+			if t != lineEmpty && t != lineTool && t != lineShellOutput && t != lineShellError {
 				wrapped = append(wrapped, "")
 			}
 		}

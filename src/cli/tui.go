@@ -142,7 +142,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -216,9 +216,10 @@ type tuiModel struct {
 	msgCh          chan tea.Msg
 	initialPrompt  string // if set, sent automatically on Init
 
-	splash     *splashModel // non-nil while splash screen is active
-	dotFrame   int          // animation frame for prompt dots
-	dotTicking bool         // true while the dot tick is active
+	splash       *splashModel // non-nil while splash screen is active
+	dotFrame     int          // animation frame for prompt dots
+	dotTicking   bool         // true while the dot tick is active
+	mouseEnabled bool         // true while mouse cell motion tracking is on
 }
 
 // cur returns the currently active session.
@@ -373,6 +374,28 @@ func (m *tuiModel) anyRunning() bool {
 	return false
 }
 
+// syncMouse enables mouse tracking when any session needs it (running,
+// confirm, or plan-confirm states) and disables it when all sessions are
+// idle so the terminal's native text selection works.
+func (m *tuiModel) syncMouse() tea.Cmd {
+	needMouse := false
+	for _, s := range m.sessions {
+		if s.state == tuiStateRunning || s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
+			needMouse = true
+			break
+		}
+	}
+	if needMouse && !m.mouseEnabled {
+		m.mouseEnabled = true
+		return tea.EnableMouseCellMotion
+	}
+	if !needMouse && m.mouseEnabled {
+		m.mouseEnabled = false
+		return tea.DisableMouse
+	}
+	return nil
+}
+
 // ensureDotTick starts the dot animation tick if not already running.
 func (m *tuiModel) ensureDotTick() tea.Cmd {
 	if !m.dotTicking {
@@ -428,21 +451,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// ── Main UI phase ───────────────────────────────────────────────────
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		tm, cmd := m.handleKey(msg)
+		return tm, tea.Batch(cmd, m.syncMouse())
 
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress {
-			s := m.cur()
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
-				s.output.ScrollUp(3)
-				s.scrollback = !s.output.AtBottom()
-				return m, nil
-			case tea.MouseButtonWheelDown:
-				s.output.ScrollDown(3)
-				s.scrollback = !s.output.AtBottom()
-				return m, nil
-			}
+		s := m.cur()
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			s.output.ScrollUp(3)
+			s.scrollback = !s.output.AtBottom()
+		case tea.MouseButtonWheelDown:
+			s.output.ScrollDown(3)
+			s.scrollback = !s.output.AtBottom()
 		}
 		return m, nil
 
@@ -464,10 +484,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick())
+		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.syncMouse())
 
 	case sessionMsg:
-		return m.handleSessionMsg(msg)
+		tm, cmd := m.handleSessionMsg(msg)
+		return tm, tea.Batch(cmd, m.syncMouse())
 
 	case dotTickMsg:
 		m.dotFrame++
@@ -478,15 +499,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Update the active session's input if it's in input state
-	s := m.cur()
-	if s.state == tuiStateInput {
-		var cmd tea.Cmd
-		s.input, cmd = s.input.Update(msg)
-		if s.recalcInputHeight() {
-			m.resizeAll()
+	// Only forward key messages to the textarea — other message types
+	// (ticks, window size, etc.) should not reach the input widget.
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		s := m.cur()
+		if s.state == tuiStateInput {
+			var cmd tea.Cmd
+			s.input, cmd = s.input.Update(keyMsg)
+			if s.recalcInputHeight() {
+				m.resizeAll()
+			}
+			cmds = append(cmds, cmd)
 		}
-		cmds = append(cmds, cmd)
 	}
 
 	// Ensure dot animation is running while any session is active
@@ -494,6 +518,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
+	cmds = append(cmds, m.syncMouse())
 	return m, tea.Batch(cmds...)
 }
 
@@ -710,6 +735,14 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
+
+	// Filter out escape sequence fragments that Bubble Tea couldn't parse.
+	// These arrive as KeyRunes containing control characters or escape bytes.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		if msg.Runes[0] < 0x20 || msg.Runes[0] == 0x7f {
+			return m, nil
+		}
+	}
 
 	switch msg.Type {
 	case tea.KeyCtrlC:

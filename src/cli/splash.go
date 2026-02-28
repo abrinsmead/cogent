@@ -177,10 +177,6 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 		// Any key dismisses the splash
 		return s, func() tea.Msg { return splashDoneMsg{} }
 
-	case tea.MouseMsg:
-		// Any click dismisses the splash
-		return s, func() tea.Msg { return splashDoneMsg{} }
-
 	case splashTickMsg:
 		s.frame++
 		elapsed := time.Since(s.startTime)
