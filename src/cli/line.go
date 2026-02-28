@@ -49,7 +49,7 @@ func renderLine(l line) string {
 		return ""
 
 	case lineText:
-		return tuiStatusKey.Render("message") + " " + tuiDim.Render(l.Data)
+		return " " + tuiStatusKey.Render("message") + "\n" + tuiDim.Render(l.Data)
 
 	case lineTool:
 		name, summary, _ := strings.Cut(l.Data, "\x00")
