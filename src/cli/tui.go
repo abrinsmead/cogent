@@ -142,7 +142,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -216,10 +216,9 @@ type tuiModel struct {
 	msgCh          chan tea.Msg
 	initialPrompt  string // if set, sent automatically on Init
 
-	splash       *splashModel // non-nil while splash screen is active
-	dotFrame     int          // animation frame for prompt dots
-	dotTicking   bool         // true while the dot tick is active
-	mouseEnabled bool         // true while mouse cell motion tracking is on
+	splash     *splashModel // non-nil while splash screen is active
+	dotFrame   int          // animation frame for prompt dots
+	dotTicking bool         // true while the dot tick is active
 }
 
 // cur returns the currently active session.
@@ -342,7 +341,7 @@ func (m *tuiModel) createSession() *session {
 
 func (m tuiModel) Init() tea.Cmd {
 	m.setWindowTitle()
-	cmds := []tea.Cmd{m.waitForMsg()}
+	var cmds []tea.Cmd
 	if m.splash != nil {
 		cmds = append(cmds, m.splash.Init())
 	} else {
@@ -374,28 +373,6 @@ func (m *tuiModel) anyRunning() bool {
 	return false
 }
 
-// syncMouse enables mouse tracking when any session needs it (running,
-// confirm, or plan-confirm states) and disables it when all sessions are
-// idle so the terminal's native text selection works.
-func (m *tuiModel) syncMouse() tea.Cmd {
-	needMouse := false
-	for _, s := range m.sessions {
-		if s.state == tuiStateRunning || s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
-			needMouse = true
-			break
-		}
-	}
-	if needMouse && !m.mouseEnabled {
-		m.mouseEnabled = true
-		return tea.EnableMouseCellMotion
-	}
-	if !needMouse && m.mouseEnabled {
-		m.mouseEnabled = false
-		return tea.DisableMouse
-	}
-	return nil
-}
-
 // ensureDotTick starts the dot animation tick if not already running.
 func (m *tuiModel) ensureDotTick() tea.Cmd {
 	if !m.dotTicking {
@@ -416,6 +393,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.WindowSizeMsg:
 			m.width = msg.Width
 			m.height = msg.Height
+			m.resizeAll()
 			// Forward to splash
 			updated, cmd := m.splash.Update(msg)
 			m.splash = &updated
@@ -452,16 +430,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		tm, cmd := m.handleKey(msg)
-		return tm, tea.Batch(cmd, m.syncMouse())
+		return tm, cmd
 
 	case tea.MouseMsg:
 		s := m.cur()
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
-			s.output.ScrollUp(3)
-			s.scrollback = !s.output.AtBottom()
+			s.output.ScrollUp(1)
+			s.scrollback = true
 		case tea.MouseButtonWheelDown:
-			s.output.ScrollDown(3)
+			s.output.ScrollDown(1)
 			s.scrollback = !s.output.AtBottom()
 		}
 		return m, nil
@@ -484,11 +462,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.syncMouse())
+		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 
 	case sessionMsg:
 		tm, cmd := m.handleSessionMsg(msg)
-		return tm, tea.Batch(cmd, m.syncMouse())
+		return tm, cmd
 
 	case dotTickMsg:
 		m.dotFrame++
@@ -518,7 +496,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	cmds = append(cmds, m.syncMouse())
 	return m, tea.Batch(cmds...)
 }
 
@@ -687,7 +664,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyPgUp:
 		s.output.PageUp()
-		s.scrollback = !s.output.AtBottom()
+		s.scrollback = true
 		return m, nil
 	case tea.KeyPgDown:
 		s.output.PageDown()
@@ -696,7 +673,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyUp:
 		if s.state != tuiStateInput && s.state != tuiStateLinear {
 			s.output.ScrollUp(3)
-			s.scrollback = !s.output.AtBottom()
+			s.scrollback = true
 			return m, nil
 		}
 	case tea.KeyDown:
@@ -820,7 +797,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"})
-			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"})
+			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows, mouse wheel  Text select: hold Shift + click/drag"})
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
 			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"})
@@ -880,14 +857,14 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.cancelFn = nil
 		}
 		s.state = tuiStateRunning
-		return m, nil
+		return m, m.waitForMsg()
 
 	case tea.KeyEnter:
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.confirm.reply <- agent.ConfirmAllow
 		s.confirm = nil
 		s.state = tuiStateRunning
-		return m, nil
+		return m, m.waitForMsg()
 
 	case tea.KeyRunes:
 		ch := strings.ToLower(string(msg.Runes))
@@ -897,20 +874,20 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.confirm.reply <- agent.ConfirmAllow
 			s.confirm = nil
 			s.state = tuiStateRunning
-			return m, nil
+			return m, m.waitForMsg()
 		case "n":
 			s.appendLine(line{Type: lineConfirmDeny})
 			s.confirm.reply <- agent.ConfirmDeny
 			s.confirm = nil
 			s.state = tuiStateRunning
-			return m, nil
+			return m, m.waitForMsg()
 		case "a":
 			toolName := s.confirm.name
 			s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
 			s.confirm.reply <- agent.ConfirmAlways
 			s.confirm = nil
 			s.state = tuiStateRunning
-			return m, nil
+			return m, m.waitForMsg()
 		}
 	}
 	return m, nil
