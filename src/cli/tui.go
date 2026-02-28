@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,6 +150,7 @@ func (t *TUI) Run() error {
 // ─── Bubble Tea messages ─────────────────────────────────────────────────────
 
 type tuiAppendMsg struct{ text string }
+type tuiAppendLineMsg struct{ line line } // structured line for persistence
 type tuiDoneMsg struct{ err error }
 type tuiShellDoneMsg struct {
 	err     error
@@ -437,7 +439,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prompt := m.initialPrompt
 		m.initialPrompt = ""
 		s := m.cur()
-		s.appendLine(formatUserPrompt("❯ ", prompt))
+		s.appendLine(line{Type: linePrompt, Data: prompt})
 		s.autoName(prompt)
 		m.setWindowTitle()
 		s.state = tuiStateRunning
@@ -514,7 +516,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+h" {
 		m.hudMode = (m.hudMode + 1) % 3
 		labels := []string{"status bar", "overlay", "off"}
-		s.appendLine(tuiDim.Render("  HUD → " + labels[m.hudMode]))
+		s.appendLine(line{Type: lineInfo, Data: "  HUD → " + labels[m.hudMode]})
 		m.resizeAll()
 		saveHUDMode(m.cwd, m.hudMode)
 		return m, nil
@@ -579,7 +581,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					s.cancelFn()
 					s.cancelFn = nil
 				}
-				s.appendLine(tuiDim.Render("  ⏎ interrupted"))
+				s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
 				return m, nil
 			}
 			m.quitting = true
@@ -661,17 +663,6 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s.state == tuiStateInput || s.state == tuiStateRunning {
 			newMode := agent.CyclePermissionMode(s.agent.GetPermissionMode())
 			s.agent.SetPermissionMode(newMode)
-			var style lipgloss.Style
-			switch newMode {
-			case agent.ModePlan:
-				style = tuiModePlan
-			case agent.ModeYOLO:
-				style = tuiModeYOLO
-			case agent.ModeTerminal:
-				style = tuiModeTerminal
-			default:
-				style = tuiModeConfirm
-			}
 			if newMode == agent.ModeTerminal {
 				s.input.Prompt = "$ "
 				s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
@@ -679,7 +670,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.input.Prompt = "❯ "
 				s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
 			}
-			s.appendLine(tuiDim.Render("  mode → ") + style.Render(newMode.String()))
+			s.appendLine(line{Type: lineModeChange, Data: newMode.String()})
 			return m, nil
 		}
 	}
@@ -704,7 +695,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.cancelFn()
 				s.cancelFn = nil
 			}
-			s.appendLine(tuiDim.Render("  ⏎ interrupted"))
+			s.appendLine(line{Type: lineInfo, Data: "  ⏎ interrupted"})
 			return m, nil
 		}
 		m.quitting = true
@@ -728,9 +719,11 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		case value == "/clear":
 			s.agent.Reset()
-			s.lines = nil
+			s.slines = nil
+			s.rlines = nil
 			s.output.SetContent("")
-			s.appendLine(tuiDim.Render("Conversation cleared."))
+			s.appendLine(line{Type: lineInfo, Data: "Conversation cleared."})
+			deleteSessionFile(m.cwd, s.persistID)
 			return m, nil
 
 		case value == "/close":
@@ -743,7 +736,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.name = newName
 				s.nameSet = true
 				m.setWindowTitle()
-				s.appendLine(tuiDim.Render(fmt.Sprintf("Session renamed to %q.", newName)))
+				s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("Session renamed to %q.", newName)})
 			}
 			return m, nil
 
@@ -759,20 +752,20 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				} else if sess.state == tuiStateConfirm {
 					status = "needs confirmation"
 				}
-				s.appendLine(tuiDim.Render(fmt.Sprintf("%s%d: %s (%s)", marker, i+1, sess.name, status)))
+				s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("%s%d: %s (%s)", marker, i+1, sess.name, status)})
 			}
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(tuiDim.Render("Commands: /help /clear /quit /close /rename <name> /sessions /linear (/lin)"))
-			s.appendLine(tuiDim.Render("Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"))
-			s.appendLine(tuiDim.Render("Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"))
-			s.appendLine(tuiDim.Render("Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"))
-			s.appendLine(tuiDim.Render("Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"))
-			s.appendLine(tuiDim.Render("Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"))
-			s.appendLine(tuiDim.Render("Confirmations: y=allow, n=deny, a=always allow this tool for session"))
-			s.appendLine(tuiDim.Render("Terminal mode: input runs as shell commands"))
-			s.appendLine(tuiDim.Render("Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"))
+			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /linear (/lin)"})
+			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
+			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"})
+			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
+			s.appendLine(line{Type: lineInfo, Data: "Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"})
+			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows (while agent is running)"})
+			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
+			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
+			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"})
 			return m, nil
 
 		case value == "/linear" || value == "/lin":
@@ -780,17 +773,24 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			s.state = tuiStateLinear
 			s.input.Blur()
 			return m, nil
+
+		case value == "/resume":
+			return m.handleResume("")
+
+		case strings.HasPrefix(value, "/resume "):
+			arg := strings.TrimSpace(strings.TrimPrefix(value, "/resume "))
+			return m.handleResume(arg)
 		}
 
 		// Terminal mode: run as shell command
 		if s.agent.GetPermissionMode() == agent.ModeTerminal {
-			s.appendLine(tuiYellow.Render("$ " + value))
+			s.appendLine(line{Type: lineShellPrompt, Data: value})
 			s.state = tuiStateRunning
 			s.input.Blur()
 			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 		}
 
-		s.appendLine(formatUserPrompt("❯ ", value))
+		s.appendLine(line{Type: linePrompt, Data: value})
 		s.autoName(value)
 		m.setWindowTitle()
 		s.state = tuiStateRunning
@@ -814,7 +814,7 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.Type {
 	case tea.KeyCtrlC:
-		s.appendLine(tuiRed.Render("  ✗ denied (interrupted)"))
+		s.appendLine(line{Type: lineConfirmDenyInt})
 		s.confirm.reply <- agent.ConfirmDeny
 		s.confirm = nil
 		if s.cancelFn != nil {
@@ -825,7 +825,7 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEnter:
-		s.appendLine(tuiGreen.Render("  ✓ allowed"))
+		s.appendLine(line{Type: lineConfirmAllow})
 		s.confirm.reply <- agent.ConfirmAllow
 		s.confirm = nil
 		s.state = tuiStateRunning
@@ -835,20 +835,20 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ch := strings.ToLower(string(msg.Runes))
 		switch ch {
 		case "y":
-			s.appendLine(tuiGreen.Render("  ✓ allowed"))
+			s.appendLine(line{Type: lineConfirmAllow})
 			s.confirm.reply <- agent.ConfirmAllow
 			s.confirm = nil
 			s.state = tuiStateRunning
 			return m, nil
 		case "n":
-			s.appendLine(tuiRed.Render("  ✗ denied"))
+			s.appendLine(line{Type: lineConfirmDeny})
 			s.confirm.reply <- agent.ConfirmDeny
 			s.confirm = nil
 			s.state = tuiStateRunning
 			return m, nil
 		case "a":
 			toolName := s.confirm.name
-			s.appendLine(tuiGreen.Render(fmt.Sprintf("  ✓ always allow %s", toolName)))
+			s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
 			s.confirm.reply <- agent.ConfirmAlways
 			s.confirm = nil
 			s.state = tuiStateRunning
@@ -936,7 +936,11 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 
 	switch inner := msg.inner.(type) {
 	case tuiAppendMsg:
-		s.appendLine(inner.text)
+		s.appendLine(line{Type: lineInfo, Data: inner.text})
+		cmds = append(cmds, m.waitForMsg())
+
+	case tuiAppendLineMsg:
+		s.appendLine(inner.line)
 		cmds = append(cmds, m.waitForMsg())
 
 	case tuiUsageMsg:
@@ -946,38 +950,43 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.waitForMsg())
 
 	case tuiCompactionMsg:
-		s.appendLine(tuiDim.Render("  ⚡ context compacted"))
+		s.appendLine(line{Type: lineCompaction})
 		cmds = append(cmds, m.waitForMsg())
 
 	case tuiConfirmMsg:
 		s.confirm = &inner
 		s.state = tuiStateConfirm
-		s.appendLine(tuiRenderDiff(inner.name, inner.input))
+		inputJSON, _ := json.Marshal(inner.input)
+		s.appendLine(line{Type: lineDiff, Data: inner.name + "\x00" + string(inputJSON)})
 		summary := SummarizeConfirm(inner.name, inner.input)
 		prefix := ""
 		if inner.subAgent {
 			prefix = "(sub-agent) "
 		}
-		s.appendLine(tuiYellow.Render(fmt.Sprintf("%sAllow %s %s? [Y/n/a] ", prefix, inner.name, summary)))
+		s.appendLine(line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary})
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
 	case tuiDoneMsg:
 		s.state = tuiStateInput
 		if inner.err != nil {
-			s.appendLine(tuiYellow.Render("Error: " + inner.err.Error()))
+			s.appendLine(line{Type: lineError, Data: inner.err.Error()})
 		}
-		s.appendLine("")
+		// Avoid double blank line if the last line is already empty
+		if n := len(s.slines); n == 0 || s.slines[n-1].Type != lineEmpty {
+			s.appendLine(line{})
+		}
 		// Only focus the input if this is the active session
 		if s.id == m.cur().id {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
 		cmds = append(cmds, notifyCmd(s.name+" is done"))
+		saveSession(m.cwd, s)
 
 	case tuiShellDoneMsg:
 		s.state = tuiStateInput
 		if inner.err != nil {
-			s.appendLine(tuiRed.Render("Error: " + inner.err.Error()))
+			s.appendLine(line{Type: lineShellError, Data: "Error: " + inner.err.Error()})
 		}
 		// Add terminal command and output to conversation history so the
 		// agent can see what was run when the user switches back.
@@ -992,11 +1001,12 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			}
 			s.agent.AppendHistory(userText, assistantText)
 		}
-		s.appendLine("")
+		s.appendLine(line{})
 		if s.id == m.cur().id {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
+		saveSession(m.cwd, s)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1020,9 +1030,10 @@ func (m *tuiModel) switchToSession(idx int) {
 	m.setWindowTitle()
 }
 
-// closeCurrentSession closes the active session tab.
+// closeCurrentSession saves and closes the active session tab.
 func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if len(m.sessions) == 1 {
+		saveSession(m.cwd, m.cur())
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -1030,6 +1041,7 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
+	saveSession(m.cwd, s)
 	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
 	if m.active >= len(m.sessions) {
 		m.active = len(m.sessions) - 1
@@ -1042,6 +1054,168 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 		ns.input.Focus()
 	}
 	return m, textarea.Blink
+}
+
+// handleResume lists saved sessions or resumes one by number/name.
+func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
+	s := m.cur()
+	saved := listSavedSessions(m.cwd)
+
+	// Filter out sessions that are already open as tabs.
+	openIDs := make(map[string]bool)
+	for _, sess := range m.sessions {
+		openIDs[sess.persistID] = true
+	}
+	var available []sessionData
+	for _, sd := range saved {
+		if !openIDs[sd.ID] {
+			available = append(available, sd)
+		}
+	}
+
+	if len(available) == 0 {
+		s.appendLine(line{Type: lineInfo, Data: "No saved sessions to resume."})
+		return m, nil
+	}
+
+	if arg == "" {
+		// List available sessions
+		s.appendLine(line{Type: lineInfo, Data: "Saved sessions:"})
+		for i, sd := range available {
+			age := formatAge(sd.UpdatedAt)
+			preview := sessionPreview(sd)
+			s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("  %d: %s (%s) %s", i+1, sd.Name, age, preview)})
+		}
+		s.appendLine(line{Type: lineInfo, Data: "Use /resume <number> or /resume <name> to restore."})
+		return m, nil
+	}
+
+	// Try to match by number first
+	var target *sessionData
+	if n := parseResumeNumber(arg); n > 0 && n <= len(available) {
+		target = &available[n-1]
+	} else {
+		// Match by name (case-insensitive prefix)
+		argLower := strings.ToLower(arg)
+		for i := range available {
+			if strings.HasPrefix(strings.ToLower(available[i].Name), argLower) {
+				target = &available[i]
+				break
+			}
+		}
+	}
+
+	if target == nil {
+		s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("No saved session matching %q.", arg)})
+		return m, nil
+	}
+
+	// Resume the session
+	resumed := m.resumeSession(target)
+	m.active = len(m.sessions) - 1
+	m.resizeAll()
+	m.scrollTabsToActive()
+	m.setWindowTitle()
+	resumed.input.Focus()
+	return m, textarea.Blink
+}
+
+// resumeSession creates a new tab from saved session data, restoring
+// conversation history, display lines, and metadata.
+func (m *tuiModel) resumeSession(data *sessionData) *session {
+	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
+	m.nextID++
+	m.wireDispatch(s)
+	m.sessions = append(m.sessions, s)
+
+	// Restore persistent identity and metadata
+	s.persistID = data.ID
+	s.name = data.Name
+	s.nameSet = data.NameSet
+	s.createdAt = data.CreatedAt
+	s.totalCost = data.TotalCost
+	s.contextUsed = data.ContextUsed
+
+	// Restore agent state
+	s.agent.SetMessages(data.Messages)
+	s.agent.SetPermissionMode(parseModeString(data.PermissionMode))
+	if len(data.AllowedTools) > 0 {
+		allowed := make(map[string]bool)
+		for _, name := range data.AllowedTools {
+			allowed[name] = true
+		}
+		s.agent.SetAllowedTools(allowed)
+	}
+
+	// Restore input prompt style for terminal mode
+	if s.agent.GetPermissionMode() == agent.ModeTerminal {
+		s.input.Prompt = "$ "
+		s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
+	}
+
+	// Restore display lines
+	s.slines = data.Lines
+	s.rebuildRendered()
+	s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
+
+	// Remove from disk — it's now active and will be saved on close/done
+	deleteSessionFile(m.cwd, data.ID)
+
+	return s
+}
+
+// parseResumeNumber tries to parse a 1-based session number.
+func parseResumeNumber(s string) int {
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
+}
+
+// formatAge returns a human-readable relative time string.
+func formatAge(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		if m == 1 {
+			return "1 min ago"
+		}
+		return fmt.Sprintf("%d mins ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	default:
+		days := int(d.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	}
+}
+
+// sessionPreview returns a short preview of the session's last user message.
+func sessionPreview(sd sessionData) string {
+	// Find the last user text
+	for i := len(sd.Lines) - 1; i >= 0; i-- {
+		if sd.Lines[i].Type == linePrompt {
+			text := sd.Lines[i].Data
+			if len(text) > 40 {
+				text = text[:40] + "…"
+			}
+			return tuiDim.Render("— " + text)
+		}
+	}
+	return ""
 }
 
 // ─── View ────────────────────────────────────────────────────────────────────

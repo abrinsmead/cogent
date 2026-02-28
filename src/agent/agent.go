@@ -531,6 +531,15 @@ func (a *Agent) Registry() *tools.Registry { return a.registry }
 // AllowedTools returns the set of tool names that have been "always allowed" for this session.
 func (a *Agent) AllowedTools() map[string]bool { return a.allowedTools }
 
+// Messages returns the conversation history.
+func (a *Agent) Messages() []api.Message { return a.messages }
+
+// SetMessages replaces the conversation history. Used to restore a persisted session.
+func (a *Agent) SetMessages(msgs []api.Message) { a.messages = msgs }
+
+// SetAllowedTools replaces the "always allowed" tool set. Used to restore a persisted session.
+func (a *Agent) SetAllowedTools(m map[string]bool) { a.allowedTools = m }
+
 // AppendHistory injects a user message and an assistant message into the
 // conversation history. This is used by Terminal mode so that shell commands
 // and their output are visible to the agent in subsequent turns.

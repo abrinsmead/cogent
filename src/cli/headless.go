@@ -23,7 +23,7 @@ func NewHeadless(client *api.Client, cwd, prompt string) *Headless {
 func (h *Headless) Run() error {
 	ag := agent.New(h.client, h.cwd,
 		agent.WithTextCallback(func(text string) {
-			fmt.Printf("%s%s%s\n", Dim, text, Reset)
+			fmt.Printf("%s%s%s\n\n", Dim, text, Reset)
 		}),
 		agent.WithToolCallback(func(name, summary string) {
 			color := Green

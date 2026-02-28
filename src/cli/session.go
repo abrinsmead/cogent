@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -22,14 +23,17 @@ import (
 
 // session holds all per-conversation state. Each tab in the TUI is one session.
 type session struct {
-	id      int
-	name    string
-	nameSet bool // true if user explicitly renamed via /rename
+	id        int
+	persistID string // unique persistent identifier for disk storage
+	name      string
+	nameSet   bool // true if user explicitly renamed via /rename
+	createdAt time.Time
 
 	agent   *agent.Agent
 	output  viewport.Model
 	input   textarea.Model
-	lines   []string
+	slines  []line   // structured lines (persisted)
+	rlines  []string // rendered lines (for viewport display)
 	state   tuiState
 	confirm *tuiConfirmMsg
 
@@ -73,7 +77,9 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 
 	s := &session{
 		id:          id,
+		persistID:   generatePersistID(),
 		name:        "Default",
+		createdAt:   time.Now(),
 		input:       ta,
 		output:      vp,
 		state:       tuiStateInput,
@@ -86,16 +92,11 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 
 	s.agent = agent.New(client, cwd,
 		agent.WithTextCallback(func(text string) {
-			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiDim.Render(text)}}
+			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineText, Data: text}}}
+			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{}}}
 		}),
 		agent.WithToolCallback(func(name, summary string) {
-			style := tuiGreen
-			switch name {
-			case "bash", "write", "edit":
-				style = tuiRed
-			}
-			line := tuiDim.Render(" "+style.Render(name)) + " " + tuiDim.Render(summary)
-			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: line}}
+			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineTool, Data: name + "\x00" + summary}}}
 		}),
 		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
 			reply := make(chan agent.ConfirmResult)
@@ -110,7 +111,8 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		}),
 	)
 
-	s.lines = []string{""}
+	s.slines = []line{{}}
+	s.rlines = []string{""}
 
 	return s
 }
@@ -132,21 +134,31 @@ func (s *session) autoName(prompt string) {
 	}
 }
 
-// appendLine adds a line to the session's output.
-func (s *session) appendLine(text string) {
-	s.lines = append(s.lines, text)
+// appendLine adds a structured line to the session's output.
+func (s *session) appendLine(l line) {
+	s.slines = append(s.slines, l)
+	s.rlines = append(s.rlines, renderLine(l))
 	s.refreshContent()
 }
 
-// refreshContent re-wraps all lines and updates the viewport.
+// rebuildRendered re-renders all structured lines into the rendered cache.
+// Called after restoring a session from disk.
+func (s *session) rebuildRendered() {
+	s.rlines = make([]string, len(s.slines))
+	for i, l := range s.slines {
+		s.rlines[i] = renderLine(l)
+	}
+}
+
+// refreshContent re-wraps all rendered lines and updates the viewport.
 func (s *session) refreshContent() {
 	w := s.output.Width
 	if w < 1 {
 		w = 80
 	}
 	var wrapped []string
-	for _, line := range s.lines {
-		wrapped = append(wrapped, ansi.Wrap(line, w, ""))
+	for _, rl := range s.rlines {
+		wrapped = append(wrapped, ansi.Wrap(rl, w, ""))
 	}
 	s.output.SetContent(strings.Join(wrapped, "\n"))
 	if !s.scrollback {
@@ -220,14 +232,14 @@ func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.C
 		out, err := cmd.CombinedOutput()
 		output := strings.TrimRight(string(out), "\n")
 		if output != "" {
-			for _, line := range strings.Split(output, "\n") {
-				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiDim.Render("  " + line)}}
+			for _, ln := range strings.Split(output, "\n") {
+				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineShellOutput, Data: ln}}}
 			}
 		}
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitMsg := fmt.Sprintf("(exit code %d)", exitErr.ExitCode())
-				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendMsg{text: tuiRed.Render("  " + exitMsg)}}
+				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineShellError, Data: exitMsg}}}
 				fullOutput := output
 				if fullOutput != "" {
 					fullOutput += "\n"
