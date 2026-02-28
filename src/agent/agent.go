@@ -228,7 +228,7 @@ When you have gathered enough information, present your final plan in this forma
 ### Risks / Open Questions
 - Any concerns or alternatives worth noting
 
-End with: "Switch to Confirm mode (Shift+Tab) to execute this plan."`
+End with: "Ready to execute — confirm when prompted."`
 
 func (a *Agent) loop(ctx context.Context) error {
 	for i := 0; i < 50; i++ {
@@ -520,6 +520,13 @@ func (a *Agent) LastResponse() string {
 		}
 	}
 	return ""
+}
+
+// PlanReady returns true if the agent's last response signals a completed plan
+// (contains the "Ready to execute" marker from the plan prompt instructions).
+func (a *Agent) PlanReady() bool {
+	resp := strings.ToLower(a.LastResponse())
+	return strings.Contains(resp, "ready to execute")
 }
 
 func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode.Store(int32(m)) }

@@ -158,10 +158,22 @@ func (s *session) refreshContent() {
 	}
 	var wrapped []string
 	for i, rl := range s.rlines {
+		// Add a leading blank line before messages and confirmations
+		// to separate them from compact tool call clusters.
+		if i < len(s.slines) {
+			t := s.slines[i].Type
+			if t == lineText || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm {
+				wrapped = append(wrapped, "")
+			}
+		}
 		wrapped = append(wrapped, ansi.Wrap(rl, w, ""))
-		// Add a blank line after every non-empty line type
-		if i < len(s.slines) && s.slines[i].Type != lineEmpty {
-			wrapped = append(wrapped, "")
+		// Add a blank line after most line types for spacing.
+		// Tool calls are compact — no trailing blank.
+		if i < len(s.slines) {
+			t := s.slines[i].Type
+			if t != lineEmpty && t != lineTool {
+				wrapped = append(wrapped, "")
+			}
 		}
 	}
 	s.output.SetContent(strings.Join(wrapped, "\n"))

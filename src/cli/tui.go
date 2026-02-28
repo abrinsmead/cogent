@@ -181,10 +181,11 @@ type dotTickMsg struct{}
 type tuiState int
 
 const (
-	tuiStateInput   tuiState = iota
+	tuiStateInput       tuiState = iota
 	tuiStateRunning
 	tuiStateConfirm
 	tuiStateLinear
+	tuiStatePlanConfirm // "Switch to Confirm mode and execute?" prompt after planning
 )
 
 type hudMode int
@@ -698,6 +699,8 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch s.state {
 	case tuiStateConfirm:
 		return m.handleConfirm(msg)
+	case tuiStatePlanConfirm:
+		return m.handlePlanConfirm(msg)
 	case tuiStateLinear:
 		return m.handleLinear(msg)
 	default:
@@ -880,6 +883,54 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handlePlanConfirm processes the "Switch to Confirm mode and execute?" prompt
+// shown after planning completes. y/Enter switches to Confirm mode and re-sends
+// the agent's plan as a user instruction. n/Esc returns to normal input.
+func (m *tuiModel) handlePlanConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+
+	accept := func() (tea.Model, tea.Cmd) {
+		s.appendLine(line{Type: lineConfirmAllow})
+		s.agent.SetPermissionMode(agent.ModeConfirm)
+		s.input.Prompt = "❯ "
+		s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
+		s.appendLine(line{Type: lineModeChange, Data: agent.ModeConfirm.String()})
+		s.state = tuiStateRunning
+		s.input.Blur()
+		return m, tea.Batch(
+			s.sendToAgent("Execute the plan above.", m.msgCh),
+			m.waitForMsg(),
+			m.ensureDotTick(),
+		)
+	}
+
+	decline := func() (tea.Model, tea.Cmd) {
+		s.state = tuiStateInput
+		if s.id == m.cur().id {
+			s.input.Focus()
+		}
+		return m, textarea.Blink
+	}
+
+	switch msg.Type {
+	case tea.KeyEnter:
+		return accept()
+	case tea.KeyEsc:
+		return decline()
+	case tea.KeyCtrlC:
+		return decline()
+	case tea.KeyRunes:
+		ch := strings.ToLower(string(msg.Runes))
+		switch ch {
+		case "y":
+			return accept()
+		case "n":
+			return decline()
+		}
+	}
+	return m, nil
+}
+
 // handleLinear processes key events while the Linear ticket browser is open.
 func (m *tuiModel) handleLinear(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
@@ -989,12 +1040,18 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
 	case tuiDoneMsg:
-		s.state = tuiStateInput
 		if inner.err != nil {
+			s.state = tuiStateInput
 			s.appendLine(line{Type: lineError, Data: inner.err.Error()})
+		} else if s.agent.GetPermissionMode() == agent.ModePlan && s.agent.PlanReady() {
+			// Planning finished with a ready signal — ask to switch to Confirm.
+			s.state = tuiStatePlanConfirm
+			s.appendLine(line{Type: linePlanConfirm})
+		} else {
+			s.state = tuiStateInput
 		}
-		// Only focus the input if this is the active session
-		if s.id == m.cur().id {
+		// Only focus the input if this is the active session and we're in input state
+		if s.id == m.cur().id && s.state == tuiStateInput {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
@@ -1271,6 +1328,8 @@ func (m tuiModel) View() string {
 	switch s.state {
 	case tuiStateConfirm:
 		promptContent = tuiStatus.Render(" y/n/a ")
+	case tuiStatePlanConfirm:
+		promptContent = tuiStatus.Render(" y/n ")
 	case tuiStateRunning:
 		dots := strings.Repeat(".", m.dotFrame%4) + strings.Repeat(" ", 3-m.dotFrame%4)
 		if s.agent.GetPermissionMode() == agent.ModeTerminal {
@@ -1472,7 +1531,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			} else {
 				style = tuiTabActive
 			}
-		} else if s.state == tuiStateConfirm {
+		} else if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
 			style = tuiTabNeedsAttention
 		} else if s.state == tuiStateRunning {
 			style = tuiTabRunning
@@ -1481,7 +1540,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 		}
 
 		var dotColor lipgloss.TerminalColor
-		if s.state == tuiStateConfirm {
+		if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
 			dotColor = lipgloss.Color("1")
 		} else if s.state == tuiStateRunning {
 			dotColor = lipgloss.Color("3")

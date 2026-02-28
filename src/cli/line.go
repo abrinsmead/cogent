@@ -33,6 +33,7 @@ const (
 	lineConfirmDenyInt lineType = "deny_int"   // "✗ denied (interrupted)"
 	lineConfirmAlways  lineType = "always"     // "✓ always allow X": Data = tool name
 	lineCompaction     lineType = "compact"    // "⚡ context compacted"
+	linePlanConfirm    lineType = "planconf"   // "Switch to Confirm mode and execute? [Y/n]"
 	lineError          lineType = "error"      // agent/shell error (yellow)
 )
 
@@ -126,6 +127,9 @@ func renderLine(l line) string {
 	case lineCompaction:
 		return tuiDim.Render("  ⚡ context compacted")
 
+	case linePlanConfirm:
+		return tuiYellow.Render("Switch to Confirm mode and execute? [Y/n] ")
+
 	case lineError:
 		return tuiYellow.Render("Error: " + l.Data)
 
@@ -169,12 +173,13 @@ var (
 	mdBullet     = regexp.MustCompile(`^(\s*)([-*+])\s+(.+)$`)
 	mdNumbered   = regexp.MustCompile(`^(\s*)(\d+\.)\s+(.+)$`)
 
-	mdStyleBold       = lipgloss.NewStyle().Bold(true)
-	mdStyleItalic     = lipgloss.NewStyle().Italic(true)
+	mdStyleBold       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	mdStyleItalic     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("5"))
 	mdStyleInlineCode = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
-	mdStyleHeading    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	mdStyleCodeBlock  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	mdStyleHeading    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	mdStyleCodeBlock  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
+	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	mdStyleText       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 )
 
 func renderMarkdown(text string) string {
@@ -225,16 +230,17 @@ func renderMarkdown(text string) string {
 }
 
 // applyInlineStyles renders bold, italic, and inline code within a line.
+// Inline code and bold get their own colors; all other text is purple.
 func applyInlineStyles(s string) string {
 	// Inline code first (so bold/italic don't match inside code spans)
 	s = mdInlineCode.ReplaceAllStringFunc(s, func(m string) string {
 		inner := mdInlineCode.FindStringSubmatch(m)[1]
-		return mdStyleInlineCode.Render(" " + inner + " ")
+		return "\x00" + mdStyleInlineCode.Render(" "+inner+" ") + "\x00"
 	})
 	// Bold
 	s = mdBold.ReplaceAllStringFunc(s, func(m string) string {
 		inner := mdBold.FindStringSubmatch(m)[1]
-		return mdStyleBold.Render(inner)
+		return "\x00" + mdStyleBold.Render(inner) + "\x00"
 	})
 	// Italic (single *)
 	s = mdItalic.ReplaceAllStringFunc(s, func(m string) string {
@@ -247,7 +253,16 @@ func applyInlineStyles(s string) string {
 		if len(m) > 0 && m[len(m)-1] != '*' {
 			suffix = string(m[len(m)-1])
 		}
-		return prefix + mdStyleItalic.Render(sub[1]) + suffix
+		return prefix + "\x00" + mdStyleItalic.Render(sub[1]) + "\x00" + suffix
 	})
-	return s
+
+	// Split on \x00 markers and wrap plain segments in purple
+	parts := strings.Split(s, "\x00")
+	for i, p := range parts {
+		// Even-indexed parts are plain text; odd-indexed are pre-styled spans
+		if i%2 == 0 && p != "" {
+			parts[i] = mdStyleText.Render(p)
+		}
+	}
+	return strings.Join(parts, "")
 }
