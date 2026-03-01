@@ -22,6 +22,7 @@ func NewHeadless(client *api.Client, cwd, prompt string) *Headless {
 
 func (h *Headless) Run() error {
 	ag := agent.New(h.client, h.cwd,
+		agent.WithPermissionMode(agent.ModeYOLO),
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("%s%s%s\n\n", Dim, text, Reset)
 		}),
@@ -53,10 +54,6 @@ func (h *Headless) Run() error {
 			if truncated {
 				fmt.Printf("%s%s  ... output truncated (%d lines shown)%s\n", Bold, Yellow, maxLines, Reset)
 			}
-		}),
-		// Auto-approve everything in headless mode.
-		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
-			return agent.ConfirmAllow
 		}),
 	)
 

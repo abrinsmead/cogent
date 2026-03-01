@@ -4,17 +4,47 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/anthropics/agent/api"
 	"github.com/anthropics/agent/cli"
 	"github.com/anthropics/agent/config"
-	"golang.org/x/term"
 )
 
+const usage = `Usage: cogent [command] [flags]
+
+Commands:
+  tui     Full-screen terminal UI (default)
+  repl    Interactive REPL without full-screen UI
+  agent   Headless mode, auto-approves all tools (requires --prompt)
+
+Flags:
+  --prompt "..."   Initial prompt to send to the agent
+`
+
 func main() {
-	headless := flag.Bool("headless", false, "Run in headless mode (no TUI, auto-approve, requires a prompt)")
-	flag.Parse()
+	// Parse subcommand.
+	mode := "tui"
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "tui", "repl", "agent":
+			mode = args[0]
+			args = args[1:]
+		case "-h", "--help", "help":
+			fmt.Print(usage)
+			os.Exit(0)
+		}
+	}
+
+	// Parse flags after the subcommand.
+	fs := flag.NewFlagSet("cogent", flag.ExitOnError)
+	fs.Usage = func() { fmt.Print(usage) }
+	prompt := fs.String("prompt", "", "Initial prompt to send to the agent")
+	fs.Parse(args)
+
+	if fs.NArg() > 0 {
+		fatal("unexpected arguments: %s\nUse --prompt \"...\" to pass a prompt", fs.Args())
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -32,42 +62,22 @@ func main() {
 		fatal("%s\nSet ANTHROPIC_API_KEY in the environment or in ~/.cogent/settings.", err)
 	}
 
-	prompt := strings.TrimSpace(strings.Join(flag.Args(), " "))
-
-	if !*headless && !detectHeadless(prompt) {
-		// TUI mode
-	} else {
-		*headless = true
-	}
-
 	var c cli.CLI
-	if *headless {
-		if prompt == "" {
-			fatal("headless mode requires a prompt argument")
+	switch mode {
+	case "agent":
+		if *prompt == "" {
+			fatal("agent mode requires a prompt: cogent agent --prompt \"...\"")
 		}
-		c = cli.NewHeadless(client, cwd, prompt)
-	} else {
-		c = cli.NewTUI(client, cwd, prompt)
+		c = cli.NewHeadless(client, cwd, *prompt)
+	case "repl":
+		c = cli.NewInteractive(client, cwd, *prompt)
+	default:
+		c = cli.NewTUI(client, cwd, *prompt)
 	}
 
 	if err := c.Run(); err != nil {
 		fatal("%s", err)
 	}
-}
-
-// detectHeadless returns true when the environment suggests headless mode:
-// a prompt is provided and stdin is not a TTY (CI/pipes). If no prompt is
-// given and stdin is not a TTY either, it exits with an error.
-func detectHeadless(prompt string) bool {
-	tty := term.IsTerminal(int(os.Stdin.Fd()))
-	if tty {
-		return false
-	}
-	if prompt != "" {
-		return true
-	}
-	fatal("no prompt given and stdin is not a terminal; provide a prompt or use --headless")
-	return false // unreachable
 }
 
 func fatal(format string, args ...any) {

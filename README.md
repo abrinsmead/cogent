@@ -27,20 +27,17 @@ ANTHROPIC_API_KEY=sk-ant-...
 ## Usage
 
 ```sh
-cogent                          # interactive TUI
-cogent "explain this codebase"  # TUI with initial prompt
+cogent                                    # interactive TUI (default)
+cogent tui --prompt "explain this"        # TUI with initial prompt
+cogent repl                               # interactive REPL (no full-screen UI)
+cogent agent --prompt "fix the test"      # headless, auto-approves everything
 ```
 
-When a prompt is given and stdin is not a TTY (e.g. CI), headless mode is used automatically. You can also force it:
-
-```sh
-cogent --headless "run the test suite and fix failures"
-```
-
-| Mode | Auto-selected when | Description |
-|------|------|-------------|
-| `tui` | Interactive TTY | Full-screen terminal UI |
-| `headless` | Piped / CI with a prompt | Single-shot, auto-approves all tool calls |
+| Mode | Command | Description |
+|------|---------|-------------|
+| `tui` | `cogent` or `cogent tui` | Full-screen terminal UI *(default)* |
+| `repl` | `cogent repl` | Interactive REPL without full-screen UI |
+| `agent` | `cogent agent --prompt "..."` | Single-shot, auto-approves all tool calls |
 
 ## Features
 
