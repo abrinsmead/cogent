@@ -1,3 +1,6 @@
+> [!CAUTION]
+> This agent can execute code, modify files, and run shell commands. Use at your own risk.
+
 # Cogent
 
 A lightweight coding agent for the terminal with tabbed sessions and other niceties.
