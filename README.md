@@ -1,8 +1,8 @@
 # Cogent
 
-A lightweight coding agent for the terminal.
+A lightweight coding agent for the terminal with tabbed sessions and other niceties.
 
-<img width="1440" height="876" alt="image" src="https://github.com/user-attachments/assets/03a85436-adc8-4182-9827-54cbd8744000" />
+![CleanShot 2026-02-28 at 20 05 01](https://github.com/user-attachments/assets/08ad8952-7a3b-4396-8a27-e19cbeda6e58)
 
 Cogent runs in your terminal and can read, edit, and create files, execute shell commands, delegate subtasks to sub-agents, and search your codebase.
 
