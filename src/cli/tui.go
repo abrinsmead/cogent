@@ -1731,11 +1731,11 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	var hint string
 	switch {
 	case m.newTabFocused:
-		hint = "  enter new tab"
+		hint = "  (enter to create tab)"
 	case m.tabFocused:
-		hint = "  ←/→ move  enter to select tab"
+		hint = "  (←/→ enter to select tab)"
 	default:
-		hint = "  shift ←/→ switch tabs"
+		hint = "  (shift ←/→ select tab)"
 	}
 	midRowWidth := lipgloss.Width(midRow)
 	remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
