@@ -1728,7 +1728,15 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	midRow := midBuf.String()
 	botRow := botBuf.String()
 
-	hint := "  ←/→ navigate  enter select  esc return"
+	var hint string
+	switch {
+	case m.newTabFocused:
+		hint = "  enter new tab  ← back"
+	case m.tabFocused:
+		hint = "  ←/→ move  enter switch"
+	default:
+		hint = "  shift ←/→ switch tabs"
+	}
 	midRowWidth := lipgloss.Width(midRow)
 	remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
 	if remaining >= 4 {
