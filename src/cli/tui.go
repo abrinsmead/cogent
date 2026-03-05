@@ -1733,7 +1733,7 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	case m.newTabFocused:
 		hint = "  enter new tab"
 	case m.tabFocused:
-		hint = "  ←/→ move  enter switch"
+		hint = "  ←/→ move  enter to select tab"
 	default:
 		hint = "  shift ←/→ switch tabs"
 	}
