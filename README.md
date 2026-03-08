@@ -116,8 +116,8 @@ Comment prefixes `#`, `//`, and `--` are all recognized, so the directive format
 Create a `.cogent/.env` file to set environment variables for custom tools:
 
 ```
-LINEAR_API_KEY=lin_api_...
-LINEAR_USERNAME=jane.doe
+MY_API_KEY=secret_...
+MY_USERNAME=jane.doe
 ```
 
 Variables are loaded before tool discovery, so `@env required` checks will see them. Explicit environment variables take precedence — `.env` only sets values that aren't already defined.
@@ -154,7 +154,6 @@ The input area auto-grows as you type (up to 10 lines).
 | `/sessions` | List all sessions |
 | `/resume [name]` | Resume a saved session (by number or name) |
 | `/close` | Close the current session |
-| `/tasks` | Browse tasks (also `/linear`, `/lin`) |
 | `/quit` | Exit (also `/exit`, `/q`) |
 
 #### Status Bar

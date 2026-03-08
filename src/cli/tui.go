@@ -181,7 +181,7 @@ const (
 	tuiStateInput   tuiState = iota
 	tuiStateRunning
 	tuiStatePrompt // unified prompt state (confirm, plan confirm, or choice)
-	tuiStateTasks
+
 )
 
 type hudMode int
@@ -666,7 +666,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab key toggles focus to the tab bar
-	if msg.String() == "tab" && !m.tabFocused && s.state != tuiStateTasks {
+	if msg.String() == "tab" && !m.tabFocused {
 		m.tabFocused = true
 		s.input.Blur()
 		return m, nil
@@ -721,7 +721,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.updatePromptLine()
 			return m, nil
 		}
-		if s.state != tuiStateInput && s.state != tuiStateTasks {
+		if s.state != tuiStateInput {
 			s.output.ScrollUp(3)
 			s.scrollback = true
 			return m, nil
@@ -732,7 +732,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.updatePromptLine()
 			return m, nil
 		}
-		if s.state != tuiStateInput && s.state != tuiStateTasks {
+		if s.state != tuiStateInput {
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
 			return m, nil
@@ -768,8 +768,6 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch s.state {
 	case tuiStatePrompt:
 		return m.handlePrompt(msg)
-	case tuiStateTasks:
-		return m.handleTasks(msg)
 	default:
 		return m.handleInput(msg)
 	}
@@ -876,7 +874,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /tasks /linear (/lin)"})
+			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
@@ -886,12 +884,6 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
 			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"})
-			return m, nil
-
-		case value == "/tasks" || value == "/linear" || value == "/lin":
-			s.taskModal = newTaskModal(detectTaskProvider(), m.width, m.height)
-			s.state = tuiStateTasks
-			s.input.Blur()
 			return m, nil
 
 		case value == "/resume":
@@ -1156,72 +1148,6 @@ func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			}
 		}
 	}
-	return m, nil
-}
-
-// handleTasks processes key events while the task browser modal is open.
-func (m *tuiModel) handleTasks(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	s := m.cur()
-	if s.taskModal == nil {
-		s.state = tuiStateInput
-		s.input.Focus()
-		return m, nil
-	}
-
-	switch msg.String() {
-	case "esc":
-		// Check if we're already at the top level before calling back
-		atTopLevel := !s.taskModal.showDetail && s.taskModal.groupKey == ""
-		if atTopLevel {
-			// Close the modal
-			s.taskModal = nil
-			s.state = tuiStateInput
-			s.input.Focus()
-			return m, textarea.Blink
-		}
-		s.taskModal.back()
-		return m, nil
-
-	case "up":
-		s.taskModal.up()
-		return m, nil
-
-	case "down":
-		s.taskModal.down()
-		return m, nil
-
-	case "tab":
-		s.taskModal.switchView()
-		return m, nil
-
-	case "backspace":
-		s.taskModal.back()
-		return m, nil
-
-	case "enter":
-		// If viewing detail, insert into prompt
-		if s.taskModal.showDetail {
-			t := s.taskModal.selectedItem()
-			if t != nil {
-				text := formatTaskForPrompt(t)
-				s.taskModal = nil
-				s.state = tuiStateInput
-				s.input.Focus()
-				s.input.SetValue(text)
-				return m, textarea.Blink
-			}
-			return m, nil
-		}
-		s.taskModal.enter()
-		return m, nil
-
-	case "ctrl+c":
-		s.taskModal = nil
-		s.state = tuiStateInput
-		s.input.Focus()
-		return m, textarea.Blink
-	}
-
 	return m, nil
 }
 
@@ -1557,7 +1483,7 @@ func (m tuiModel) View() tea.View {
 
 	// Overlay HUD on the viewport output (hidden while a modal is open)
 	viewportContent := s.output.View()
-	if m.hudMode == hudOverlay && !hasModal(s) {
+	if m.hudMode == hudOverlay {
 		hudLines := s.renderHUD(m.client, m.cwd)
 		if len(hudLines) > 0 {
 			viewportContent = overlayHUD(viewportContent, hudLines, m.width)
@@ -1678,24 +1604,6 @@ func (m tuiModel) View() tea.View {
 	b.WriteString(tabRows)
 
 	view := b.String()
-
-	// Modal overlay — centered in the viewport area
-	if hasModal(s) {
-		if s.taskModal != nil {
-			mw := m.width * 80 / 100
-			if mw > 100 {
-				mw = 100
-			}
-			mh := m.height * 70 / 100
-			if mh > 30 {
-				mh = 30
-			}
-			s.taskModal.width = mw
-			s.taskModal.height = mh
-			modalStr := s.taskModal.render()
-			view = overlayModal(dimView(view), modalStr, m.width, m.height)
-		}
-	}
 
 	v := tea.NewView(view)
 	v.AltScreen = true

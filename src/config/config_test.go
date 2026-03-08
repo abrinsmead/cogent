@@ -12,8 +12,8 @@ func TestLoadFile(t *testing.T) {
 
 	content := `# Global settings
 ANTHROPIC_API_KEY=sk-test-12345
-LINEAR_API_KEY='lin_api_abc123'
-LINEAR_USERNAME="jane.doe"
+SINGLE_QUOTED='some_value_123'
+DOUBLE_QUOTED="jane.doe"
 EMPTY_LINE_BELOW
 
 BARE_VALUE=hello
@@ -23,7 +23,7 @@ BARE_VALUE=hello
 	}
 
 	// Clear any existing values
-	for _, key := range []string{"ANTHROPIC_API_KEY", "LINEAR_API_KEY", "LINEAR_USERNAME", "BARE_VALUE"} {
+	for _, key := range []string{"ANTHROPIC_API_KEY", "SINGLE_QUOTED", "DOUBLE_QUOTED", "BARE_VALUE"} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -36,8 +36,8 @@ BARE_VALUE=hello
 		key, want string
 	}{
 		{"ANTHROPIC_API_KEY", "sk-test-12345"},
-		{"LINEAR_API_KEY", "lin_api_abc123"},    // single quotes stripped
-		{"LINEAR_USERNAME", "jane.doe"},          // double quotes stripped
+		{"SINGLE_QUOTED", "some_value_123"},    // single quotes stripped
+		{"DOUBLE_QUOTED", "jane.doe"},           // double quotes stripped
 		{"BARE_VALUE", "hello"},
 	}
 	for _, tt := range tests {

@@ -27,8 +27,6 @@ cogent/
 │   │   ├── tui.go        # Bubble Tea full-screen UI (viewport, textarea, status bar, tab bar)
 │   │   ├── session.go    # per-session state (agent, viewport, input, sub-agent support)
 │   │   ├── headless.go   # single-shot, auto-approve, for CI/pipes
-│   │   ├── linear.go     # Linear ticket browser modal
-│   │   ├── modal.go      # modal overlay helpers (dim, center)
 │   │   └── splash.go     # animated startup splash screen
 │   ├── config/
 │   │   ├── config.go     # global settings loader (~/.cogent/settings)
@@ -68,7 +66,7 @@ Requires Go 1.24+ and `ANTHROPIC_API_KEY` set (via environment or `~/.cogent/set
 - `config.Load()` reads `~/.cogent/settings` at startup, before the API client is created.
 - Uses `KEY=VALUE` format (same as `.env` — `#` comments, optional quoting).
 - Only sets keys not already in the environment — explicit env vars always win.
-- Intended for global credentials (`ANTHROPIC_API_KEY`, `LINEAR_API_KEY`, `LINEAR_USERNAME`, etc.).
+- Intended for global credentials (`ANTHROPIC_API_KEY`, etc.).
 - **Precedence** (highest to lowest): explicit env vars → `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
 
 ### Agent Loop (`agent/agent.go`)
@@ -201,7 +199,7 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
     - PgUp/PgDn: scroll viewport page, ↑/↓: scroll 3 lines (when not in input)
     - y/n/a/Enter: allow / deny / always-allow tool during confirmation
 
-  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/linear` (also `/lin`).
+  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/resume`.
 
   - **Sub-agent confirmations**: routed to the parent session's tab, prefixed with "(sub-agent)". Sub-agents run as tab-less goroutines — they don't get their own tabs.
 

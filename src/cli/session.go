@@ -45,9 +45,6 @@ type session struct {
 	scrollback   bool
 	pastedText   string // stored paste content when input shows collapsed label
 
-	// Task browser modal
-	taskModal *taskModal
-
 	// Status bar stats (per-session)
 	contextUsed int
 	totalCost   float64
