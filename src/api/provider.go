@@ -90,6 +90,8 @@ func NewProvider(spec ModelSpec) (Provider, error) {
 		return NewOpenAIProvider(spec.Model)
 	case "gemini":
 		return NewGeminiProvider(spec.Model)
+	case "openrouter":
+		return NewOpenRouterProvider(spec.Model)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", spec.Provider)
 	}
@@ -162,6 +164,11 @@ func AvailableModels() []ModelSpec {
 	if os.Getenv("GEMINI_API_KEY") != "" {
 		for model := range knownGeminiModels {
 			models = append(models, ModelSpec{Provider: "gemini", Model: model})
+		}
+	}
+	if os.Getenv("OPENROUTER_API_KEY") != "" {
+		for model := range knownOpenRouterModels {
+			models = append(models, ModelSpec{Provider: "openrouter", Model: model})
 		}
 	}
 
