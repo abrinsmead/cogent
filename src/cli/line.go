@@ -36,6 +36,8 @@ const (
 	lineToolsLoaded    lineType = "tools"      // active custom tools: Data = "name1, name2, ..."
 	linePlanConfirm    lineType = "planconf"   // "Switch to Confirm mode and execute? [Y/n]"
 	lineError          lineType = "error"      // agent/shell error (yellow)
+	lineChoice         lineType = "choice"     // clarifying question: Data = "question\x00opt1\x00opt2\x00..."
+	lineChoiceSelected lineType = "chosen"     // selected choice: Data = chosen label
 )
 
 // line is a single entry in the session viewport. Stored as structured data
@@ -141,6 +143,26 @@ func renderLine(l line) string {
 
 	case lineError:
 		return tuiYellow.Render("Error: " + l.Data)
+
+	case lineChoice:
+		// Data = "question\x00opt1\x00opt2\x00..."
+		parts := strings.Split(l.Data, "\x00")
+		if len(parts) == 0 {
+			return ""
+		}
+		question := parts[0]
+		choices := parts[1:]
+		var b strings.Builder
+		b.WriteString(tuiYellow.Render(question))
+		for i, c := range choices {
+			b.WriteString("\n")
+			prefix := fmt.Sprintf("  %d. ", i+1)
+			b.WriteString(tuiDim.Render(prefix) + mdStyleText.Render(c))
+		}
+		return b.String()
+
+	case lineChoiceSelected:
+		return tuiGreen.Render("  ✓ " + l.Data)
 
 	default:
 		return l.Data

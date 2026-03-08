@@ -35,7 +35,9 @@ type session struct {
 	slines  []line   // structured lines (persisted)
 	rlines  []string // rendered lines (for viewport display)
 	state   tuiState
-	confirm *tuiConfirmMsg
+	confirm *tuiConfirmMsg  // active tool confirmation (reply channel for agent)
+	clarify *tuiClarifyMsg  // active clarifying question (reply channel for agent)
+	prompt  *promptModel    // active user prompt (confirm, plan confirm, or choice)
 
 	cancelFn     context.CancelFunc
 	inputHeight  int
@@ -157,6 +159,20 @@ func (s *session) appendLine(l line) {
 	s.refreshContent()
 }
 
+// updatePromptLine re-renders the last line in the viewport. Used when the
+// user navigates choices in a promptChoice so the highlighting updates live.
+func (s *session) updatePromptLine() {
+	if s.prompt == nil || len(s.slines) == 0 {
+		return
+	}
+	last := len(s.rlines) - 1
+	if last < 0 {
+		return
+	}
+	s.rlines[last] = s.prompt.renderPromptLine()
+	s.refreshContent()
+}
+
 // rebuildRendered re-renders all structured lines into the rendered cache.
 // Called after restoring a session from disk.
 func (s *session) rebuildRendered() {
@@ -183,7 +199,7 @@ func (s *session) refreshContent() {
 		// text blocks from web search) — the trailing blank already provides spacing.
 		if i < len(s.slines) {
 			t := s.slines[i].Type
-			if t == lineText || t == linePrompt || t == lineShellPrompt || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm {
+			if t == lineText || t == linePrompt || t == lineShellPrompt || t == lineDiff || t == lineConfirmPrompt || t == linePlanConfirm || t == lineChoice {
 				prevSameType := i > 0 && i-1 < len(s.slines) && s.slines[i-1].Type == t
 				if !prevSameType {
 					wrapped = append(wrapped, "")

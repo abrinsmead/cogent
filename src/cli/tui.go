@@ -157,6 +157,13 @@ type tuiConfirmMsg struct {
 	subAgent bool // true if from a sub-agent (routed to parent)
 }
 
+// tuiClarifyMsg is sent when the clarify tool asks a multiple-choice question.
+type tuiClarifyMsg struct {
+	question string
+	choices  []string
+	reply    chan string // receives the selected choice text or freeform input
+}
+
 // sessionMsg wraps a message with the session ID it belongs to.
 type sessionMsg struct {
 	sessionID int
@@ -171,11 +178,10 @@ type dotTickMsg struct{}
 type tuiState int
 
 const (
-	tuiStateInput       tuiState = iota
+	tuiStateInput   tuiState = iota
 	tuiStateRunning
-	tuiStateConfirm
+	tuiStatePrompt // unified prompt state (confirm, plan confirm, or choice)
 	tuiStateTasks
-	tuiStatePlanConfirm // "Switch to Confirm mode and execute?" prompt after planning
 )
 
 type hudMode int
@@ -282,25 +288,49 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		m.nextID++
 		m.sessions = []*session{s}
 		m.active = 0
-		m.wireDispatch(s)
+		m.wireTools(s)
 	}
 
 	return m
 }
 
-// wireDispatch sets up the dispatch tool's spawn function for a session.
+// wireTools sets up the dispatch and clarify tools for a session.
 // Sub-agents run as tab-less goroutines with all tools except dispatch.
-// Confirmations are routed to the parent session's tab.
-func (m *tuiModel) wireDispatch(s *session) {
+// Confirmations and clarify questions are routed to the parent session's tab.
+func (m *tuiModel) wireTools(s *session) {
 	client := m.client
 	cwd := m.cwd
 	msgCh := m.msgCh
 	parentID := s.id
 
+	// Wire clarify tool for this session
+	ct := &tools.ClarifyTool{}
+	s.agent.Registry().RegisterTool(ct)
+	ct.Ask = func(question string, choices []string) (string, error) {
+		reply := make(chan string)
+		msgCh <- sessionMsg{sessionID: s.id, inner: tuiClarifyMsg{
+			question: question, choices: choices, reply: reply,
+		}}
+		return <-reply, nil
+	}
+
+	// Wire dispatch tool for this session
 	dt := &tools.DispatchTool{}
 	s.agent.Registry().RegisterTool(dt)
 	dt.Spawn = func(task string) (string, error) {
 		reg := tools.NewRegistry(cwd)
+
+		// Wire clarify tool for sub-agent (routes to parent)
+		subCt := &tools.ClarifyTool{}
+		reg.RegisterTool(subCt)
+		subCt.Ask = func(question string, choices []string) (string, error) {
+			reply := make(chan string)
+			msgCh <- sessionMsg{sessionID: parentID, inner: tuiClarifyMsg{
+				question: question, choices: choices, reply: reply,
+			}}
+			return <-reply, nil
+		}
+
 		ag := agent.New(client, cwd,
 			agent.WithRegistry(reg),
 			agent.WithPermissionMode(s.agent.GetPermissionMode()),
@@ -326,7 +356,7 @@ func (m *tuiModel) wireDispatch(s *session) {
 func (m *tuiModel) createSession() *session {
 	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
 	m.nextID++
-	m.wireDispatch(s)
+	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
 	return s
 }
@@ -686,12 +716,22 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		s.scrollback = !s.output.AtBottom()
 		return m, nil
 	case "up":
+		if s.state == tuiStatePrompt && s.prompt != nil && s.prompt.kind == promptChoice {
+			s.prompt.up()
+			s.updatePromptLine()
+			return m, nil
+		}
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollUp(3)
 			s.scrollback = true
 			return m, nil
 		}
 	case "down":
+		if s.state == tuiStatePrompt && s.prompt != nil && s.prompt.kind == promptChoice {
+			s.prompt.down()
+			s.updatePromptLine()
+			return m, nil
+		}
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
@@ -726,10 +766,8 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch s.state {
-	case tuiStateConfirm:
-		return m.handleConfirm(msg)
-	case tuiStatePlanConfirm:
-		return m.handlePlanConfirm(msg)
+	case tuiStatePrompt:
+		return m.handlePrompt(msg)
 	case tuiStateTasks:
 		return m.handleTasks(msg)
 	default:
@@ -830,8 +868,8 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				status := "idle"
 				if sess.state == tuiStateRunning {
 					status = "running"
-				} else if sess.state == tuiStateConfirm {
-					status = "needs confirmation"
+				} else if sess.state == tuiStatePrompt {
+					status = "needs attention"
 				}
 				s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("%s%d: %s (%s)", marker, i+1, sess.name, status)})
 			}
@@ -893,16 +931,34 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *tuiModel) handleConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handlePrompt(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
-	if s.confirm == nil {
+	if s.prompt == nil {
+		return m, nil
+	}
+	switch s.prompt.kind {
+	case promptConfirm:
+		return m.handlePromptConfirm(msg)
+	case promptPlanConfirm:
+		return m.handlePromptPlanConfirm(msg)
+	case promptChoice:
+		return m.handlePromptChoice(msg)
+	}
+	return m, nil
+}
+
+func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+	cm := s.confirm
+	if cm == nil {
 		return m, nil
 	}
 	switch msg.String() {
 	case "ctrl+c":
 		s.appendLine(line{Type: lineConfirmDenyInt})
-		s.confirm.reply <- agent.ConfirmDeny
+		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
+		s.prompt = nil
 		if s.cancelFn != nil {
 			s.cancelFn()
 			s.cancelFn = nil
@@ -912,36 +968,40 @@ func (m *tuiModel) handleConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "enter", "y", "Y":
 		s.appendLine(line{Type: lineConfirmAllow})
-		s.confirm.reply <- agent.ConfirmAllow
+		cm.reply <- agent.ConfirmAllow
 		s.confirm = nil
+		s.prompt = nil
 		s.state = tuiStateRunning
 		return m, m.waitForMsg()
 
 	case "n", "N":
 		s.appendLine(line{Type: lineConfirmDeny})
-		s.confirm.reply <- agent.ConfirmDeny
+		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
+		s.prompt = nil
 		s.state = tuiStateRunning
 		return m, m.waitForMsg()
 
 	case "a", "A":
-		toolName := s.confirm.name
+		toolName := cm.name
 		s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
-		s.confirm.reply <- agent.ConfirmAlways
+		cm.reply <- agent.ConfirmAlways
 		s.confirm = nil
+		s.prompt = nil
 		s.state = tuiStateRunning
 		return m, m.waitForMsg()
 	}
 	return m, nil
 }
 
-// handlePlanConfirm processes the "Switch to Confirm mode and execute?" prompt
+// handlePromptPlanConfirm processes the "Switch to Confirm mode and execute?" prompt
 // shown after planning completes. y/Enter switches to Confirm mode and re-sends
 // the agent's plan as a user instruction. n/Esc returns to normal input.
-func (m *tuiModel) handlePlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
 	accept := func() (tea.Model, tea.Cmd) {
+		s.prompt = nil
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.agent.SetPermissionMode(agent.ModeConfirm)
 		s.input.Prompt = "❯ "
@@ -957,6 +1017,7 @@ func (m *tuiModel) handlePlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	decline := func() (tea.Model, tea.Cmd) {
+		s.prompt = nil
 		s.state = tuiStateInput
 		if s.id == m.cur().id {
 			s.input.Focus()
@@ -978,6 +1039,121 @@ func (m *tuiModel) handlePlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return accept()
 		case "n":
 			return decline()
+		}
+	}
+	return m, nil
+}
+
+// handlePromptChoice processes key input for a multiple-choice clarifying question.
+// ↑/↓ navigate, Enter or number keys select. The last choice is freeform — when
+// selected, the textarea activates so the user can type a custom answer.
+// Esc/Ctrl+C dismiss the prompt without answering.
+func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := m.cur()
+	p := s.prompt
+	if p == nil {
+		return m, nil
+	}
+
+	clarify := s.clarify
+	if clarify == nil {
+		// No reply channel — shouldn't happen, but recover gracefully
+		s.prompt = nil
+		s.state = tuiStateInput
+		s.input.Focus()
+		return m, textarea.Blink
+	}
+
+	submit := func(text string) (tea.Model, tea.Cmd) {
+		s.appendLine(line{Type: lineChoiceSelected, Data: text})
+		clarify.reply <- text
+		s.clarify = nil
+		s.prompt = nil
+		s.state = tuiStateRunning
+		return m, m.waitForMsg()
+	}
+
+	dismiss := func() (tea.Model, tea.Cmd) {
+		s.appendLine(line{Type: lineConfirmDeny})
+		clarify.reply <- ""
+		s.clarify = nil
+		s.prompt = nil
+		if s.cancelFn != nil {
+			s.cancelFn()
+			s.cancelFn = nil
+		}
+		s.state = tuiStateRunning
+		return m, m.waitForMsg()
+	}
+
+	// ── Freeform mode: user is typing a custom answer ───────────────────
+	if p.freeform {
+		switch msg.String() {
+		case "enter":
+			value := strings.TrimSpace(s.input.Value())
+			if value == "" {
+				return m, nil
+			}
+			s.input.Reset()
+			s.inputHeight = 1
+			s.input.SetHeight(1)
+			s.input.Blur()
+			m.resizeAll()
+			return submit(value)
+
+		case "esc", "ctrl+c":
+			s.input.Reset()
+			s.input.Blur()
+			s.inputHeight = 1
+			s.input.SetHeight(1)
+			m.resizeAll()
+			return dismiss()
+
+		default:
+			// Forward to textarea
+			var cmd tea.Cmd
+			s.input, cmd = s.input.Update(msg)
+			if s.recalcInputHeight() {
+				m.resizeAll()
+			}
+			return m, cmd
+		}
+	}
+
+	// ── Normal choice selection mode ────────────────────────────────────
+	switch msg.String() {
+	case "enter":
+		if p.isOtherSelected() {
+			// Activate freeform input
+			p.freeform = true
+			s.input.Focus()
+			s.updatePromptLine()
+			return m, textarea.Blink
+		}
+		return submit(p.choices[p.selectedChoice()])
+
+	case "esc", "ctrl+c":
+		return dismiss()
+
+	default:
+		// Number keys: 1-9 for quick selection
+		if msg.Text != "" && len(msg.Text) == 1 {
+			r := rune(msg.Text[0])
+			if r >= '1' && r <= '9' {
+				n := int(r - '0')
+				if n >= 1 && n <= len(p.choices) {
+					idx := n - 1
+					p.selectByNumber(n)
+					s.updatePromptLine()
+					if idx == len(p.choices)-1 {
+						// Last choice = freeform
+						p.freeform = true
+						s.input.Focus()
+						return m, textarea.Blink
+					}
+					return submit(p.choices[idx])
+				}
+			}
 		}
 	}
 	return m, nil
@@ -1080,7 +1256,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 
 	case tuiConfirmMsg:
 		s.confirm = &inner
-		s.state = tuiStateConfirm
+		s.state = tuiStatePrompt
 		inputJSON, _ := json.Marshal(inner.input)
 		s.appendLine(line{Type: lineDiff, Data: inner.name + "\x00" + string(inputJSON)})
 		summary := SummarizeConfirm(inner.name, inner.input)
@@ -1089,7 +1265,17 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			prefix = "(sub-agent) "
 		}
 		s.appendLine(line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary})
+		p := newConfirmPrompt(&inner, fmt.Sprintf("%sAllow %s %s? [Y/n/a] ", prefix, inner.name, summary))
+		s.prompt = &p
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
+
+	case tuiClarifyMsg:
+		s.clarify = &inner
+		s.state = tuiStatePrompt
+		p := newChoicePrompt(inner.question, inner.choices)
+		s.prompt = &p
+		s.appendLine(line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")})
+		cmds = append(cmds, notifyCmd(s.name+" has a question"), m.waitForMsg())
 
 	case tuiDoneMsg:
 		if inner.err != nil {
@@ -1097,7 +1283,9 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineError, Data: inner.err.Error()})
 		} else if s.agent.GetPermissionMode() == agent.ModePlan && s.agent.PlanReady() {
 			// Planning finished with a ready signal — ask to switch to Confirm.
-			s.state = tuiStatePlanConfirm
+			s.state = tuiStatePrompt
+			p := newPlanConfirmPrompt()
+			s.prompt = &p
 			s.appendLine(line{Type: linePlanConfirm})
 		} else {
 			s.state = tuiStateInput
@@ -1248,7 +1436,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
 	m.nextID++
-	m.wireDispatch(s)
+	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
 
 	// Restore persistent identity and metadata
@@ -1381,10 +1569,15 @@ func (m tuiModel) View() tea.View {
 	// Build the prompt content
 	var promptContent string
 	switch s.state {
-	case tuiStateConfirm:
-		promptContent = tuiStatus.Render(" y/n/a ")
-	case tuiStatePlanConfirm:
-		promptContent = tuiStatus.Render(" y/n ")
+	case tuiStatePrompt:
+		if s.prompt != nil && s.prompt.freeform {
+			// Freeform mode — show the textarea for typing
+			promptContent = s.input.View()
+		} else if s.prompt != nil {
+			promptContent = tuiStatus.Render(s.prompt.hintText())
+		} else {
+			promptContent = tuiStatus.Render(" y/n ")
+		}
 	case tuiStateRunning:
 		dots := strings.Repeat(".", m.dotFrame%4) + strings.Repeat(" ", 3-m.dotFrame%4)
 		if s.agent.GetPermissionMode() == agent.ModeTerminal {
@@ -1591,7 +1784,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			} else {
 				style = tuiTabActive
 			}
-		} else if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
+		} else if s.state == tuiStatePrompt {
 			style = tuiTabNeedsAttention
 		} else if s.state == tuiStateRunning {
 			style = tuiTabRunning
@@ -1600,7 +1793,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 		}
 
 		dot := ""
-		if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
+		if s.state == tuiStatePrompt {
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
