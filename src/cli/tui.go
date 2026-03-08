@@ -110,20 +110,10 @@ var (
 	tuiTabNeedsAttention = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("1")).
 				Bold(true)
-
-	tuiPaste = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("15"))
 )
 
-// formatUserPrompt returns the display string for a user prompt.
-// Long or multi-line input is collapsed into a short "[Paste: N lines]" label.
+// formatUserPrompt returns the display string for a user prompt in chat history.
 func formatUserPrompt(prefix, value string) string {
-	lines := strings.Count(value, "\n")
-	if lines >= 2 || len(value) > 500 {
-		label := fmt.Sprintf("[Pasted %d lines]", lines+1)
-		return tuiPrompt.Render(prefix) + tuiPaste.Render(label)
-	}
 	return tuiPrompt.Render(prefix + value)
 }
 
@@ -433,6 +423,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		tm, cmd := m.handleKey(msg)
 		return tm, cmd
+
+	case tea.PasteMsg:
+		s := m.cur()
+		if s.state == tuiStateInput {
+			lines := strings.Count(msg.Content, "\n")
+			if lines >= 2 || len(msg.Content) > 500 {
+				// Collapse large paste into a label in the input
+				s.pastedText = msg.Content
+				s.input.Reset()
+				label := fmt.Sprintf("[Pasted %d lines]", lines+1)
+				s.input.InsertString(label)
+				return m, nil
+			}
+			// Small paste — insert normally
+			s.input.InsertString(msg.Content)
+			if s.recalcInputHeight() {
+				s.resize(m.width, m.height, 7+s.inputHeight)
+			}
+			return m, nil
+		}
+		return m, nil
 
 	case tea.MouseWheelMsg:
 		s := m.cur()
@@ -765,6 +776,11 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		value := strings.TrimSpace(s.input.Value())
+		// If we have a stored paste, use that instead of the collapsed label
+		if s.pastedText != "" {
+			value = strings.TrimSpace(s.pastedText)
+			s.pastedText = ""
+		}
 		if value == "" {
 			return m, nil
 		}
@@ -861,6 +877,10 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick())
 
 	default:
+		// If the user edits while a collapsed paste is shown, clear the stored paste
+		if s.pastedText != "" {
+			s.pastedText = ""
+		}
 		var cmd tea.Cmd
 		s.input, cmd = s.input.Update(msg)
 		if s.recalcInputHeight() {

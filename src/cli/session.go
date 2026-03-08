@@ -41,6 +41,7 @@ type session struct {
 	inputHeight  int
 	modeTagWidth int // visual width of " Mode " prefix in prompt box
 	scrollback   bool
+	pastedText   string // stored paste content when input shows collapsed label
 
 	// Task browser modal
 	taskModal *taskModal
@@ -90,8 +91,6 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		state:       tuiStateInput,
 		inputHeight: 1,
 	}
-	s.updateModeTagWidth()
-
 	if id > 0 {
 		s.name = fmt.Sprintf("Session %d", id+1)
 	}
@@ -115,6 +114,8 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 			msgCh <- sessionMsg{sessionID: id, inner: tuiCompactionMsg{}}
 		}),
 	)
+
+	s.updateModeTagWidth()
 
 	s.slines = []line{{}}
 	s.rlines = []string{""}
