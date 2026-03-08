@@ -691,10 +691,20 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			newMode := agent.CyclePermissionMode(s.agent.GetPermissionMode())
 			s.agent.SetPermissionMode(newMode)
 			if newMode == agent.ModeTerminal {
-				s.input.Prompt = "$ "
+				s.input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+					if info.LineNumber == 0 {
+						return "$ "
+					}
+					return "  "
+				})
 				s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
 			} else {
-				s.input.Prompt = "❯ "
+				s.input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+					if info.LineNumber == 0 {
+						return "❯ "
+					}
+					return "  "
+				})
 				s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
 			}
 			s.appendLine(line{Type: lineModeChange, Data: newMode.String()})

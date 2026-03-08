@@ -55,7 +55,12 @@ type session struct {
 func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question or press Shift+Tab to change modes"
-	ta.Prompt = "❯ "
+	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ta.CharLimit = 0
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
@@ -236,7 +241,8 @@ func (s *session) inputVisualLines() int {
 	if value == "" {
 		return 1
 	}
-	wrapWidth := s.input.Width()
+	// The textarea wraps text at width minus prompt width (2 chars).
+	wrapWidth := s.input.Width() - 2
 	if wrapWidth < 1 {
 		wrapWidth = 1
 	}
