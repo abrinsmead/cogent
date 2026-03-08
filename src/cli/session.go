@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
@@ -37,9 +37,11 @@ type session struct {
 	state   tuiState
 	confirm *tuiConfirmMsg
 
-	cancelFn    context.CancelFunc
-	inputHeight int
-	scrollback  bool
+	cancelFn     context.CancelFunc
+	inputHeight  int
+	modeTagWidth int // visual width of " Mode " prefix in prompt box
+	scrollback   bool
+	pastedText   string // stored paste content when input shows collapsed label
 
 	// Task browser modal
 	taskModal *taskModal
@@ -55,14 +57,18 @@ type session struct {
 func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question or press Shift+Tab to change modes"
-	ta.Prompt = "❯ "
+	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ta.CharLimit = 0
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.Focus()
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SetContent("")
 	vp.KeyMap = viewport.KeyMap{
 		PageDown:     key.NewBinding(key.WithDisabled()),
@@ -85,7 +91,6 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		state:       tuiStateInput,
 		inputHeight: 1,
 	}
-
 	if id > 0 {
 		s.name = fmt.Sprintf("Session %d", id+1)
 	}
@@ -109,6 +114,8 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 			msgCh <- sessionMsg{sessionID: id, inner: tuiCompactionMsg{}}
 		}),
 	)
+
+	s.updateModeTagWidth()
 
 	s.slines = []line{{}}
 	s.rlines = []string{""}
@@ -159,7 +166,7 @@ func (s *session) rebuildRendered() {
 // Lines prefixed with noWrapMarker (from tables, etc.) are truncated
 // instead of soft-wrapped so box-drawing structure is preserved.
 func (s *session) refreshContent() {
-	w := s.output.Width
+	w := s.output.Width()
 	if w < 1 {
 		w = 80
 	}
@@ -237,7 +244,9 @@ func (s *session) inputVisualLines() int {
 	if value == "" {
 		return 1
 	}
-	wrapWidth := s.input.Width()
+	// The textarea width is already reduced by modeTagWidth in resize(),
+	// so Width() reflects the actual text area. Subtract the prompt (2 chars).
+	wrapWidth := s.input.Width() - 2
 	if wrapWidth < 1 {
 		wrapWidth = 1
 	}
@@ -304,13 +313,19 @@ func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.C
 
 // resize adjusts the session's viewport and input to the given dimensions.
 func (s *session) resize(width, height, chrome int) {
-	s.output.Width = width
+	s.output.SetWidth(width)
 	vpHeight := height - chrome
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
-	s.output.Height = vpHeight
-	s.input.SetWidth(width - 2)
+	s.output.SetHeight(vpHeight)
+	s.input.SetWidth(width - 2 - s.modeTagWidth)
+}
+
+// updateModeTagWidth recomputes the visual width of the mode prefix
+// (" Plan ", " Confirm ", etc.) and adjusts the textarea width accordingly.
+func (s *session) updateModeTagWidth() {
+	s.modeTagWidth = lipgloss.Width(" " + s.renderModeBar() + " ")
 }
 
 // renderModeBar returns the styled mode label for the mode bar section.
@@ -345,7 +360,7 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 	pwd := shortenPath(cwd)
 	pwdStr := tuiStatusValue.Render(pwd)
 
-	gitStr := renderGitStatus(cwd)
+	gitStr, gitDiff := cachedGitStatus(cwd)
 
 	left := tuiStatusBar.Render(" ") +
 		tuiStatusBar.Render("mod ") + model + sep +
@@ -355,8 +370,8 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 
 	if gitStr != "" {
 		left += sep + gitStr
-		if stat := gitDiffStat(cwd); stat != "" {
-			left += " " + stat
+		if gitDiff != "" {
+			left += " " + gitDiff
 		}
 	}
 
@@ -400,11 +415,11 @@ func (s *session) renderHUD(client *api.Client, cwd string) []string {
 
 	lines := []string{modelLine, contextLine, costLine, pwdLine}
 
-	gitStr := renderGitStatus(cwd)
+	gitStr, gitDiff := cachedGitStatus(cwd)
 	if gitStr != "" {
 		lines = append(lines, gitStr)
-		if stat := gitDiffStat(cwd); stat != "" {
-			lines = append(lines, tuiDim.Render("dif ")+stat)
+		if gitDiff != "" {
+			lines = append(lines, tuiDim.Render("dif ")+gitDiff)
 		}
 	}
 

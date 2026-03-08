@@ -1,13 +1,14 @@
 package cli
 
 import (
+	"image/color"
 	"math"
 	"math/rand"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // ─── Zalgo unicode combining characters ─────────────────────────────────────
@@ -173,7 +174,7 @@ func (s splashModel) Update(msg tea.Msg) (splashModel, tea.Cmd) {
 		s.height = wsm.Height
 		return s, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Any key dismisses the splash
 		return s, func() tea.Msg { return splashDoneMsg{} }
 
@@ -264,7 +265,7 @@ func (s splashModel) View() string {
 	}
 
 	// Logo line colors: green/yellow alternating
-	logoColors := []lipgloss.Color{"2", "3", "2", "3", "2", "3"}
+	logoColors := []color.Color{lipgloss.Color("2"), lipgloss.Color("3"), lipgloss.Color("2"), lipgloss.Color("3"), lipgloss.Color("2"), lipgloss.Color("3")}
 
 	subtitleStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).
