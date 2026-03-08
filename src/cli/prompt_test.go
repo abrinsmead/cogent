@@ -280,3 +280,77 @@ func TestLineTypeChoiceSelectedFreeform(t *testing.T) {
 		t.Errorf("lineChoiceSelected render should contain checkmark")
 	}
 }
+
+func TestRenderFloatingBoxConfirm(t *testing.T) {
+	reply := make(chan agent.ConfirmResult, 1)
+	cm := &tuiConfirmMsg{name: "bash", input: map[string]any{"command": "ls -la"}, reply: reply}
+	p := newConfirmPrompt(cm, "Allow bash ls -la? [Y/n/a] ")
+
+	box := p.renderFloatingBox(60)
+	if !strings.Contains(box, "╭") {
+		t.Error("box should have top-left corner")
+	}
+	if !strings.Contains(box, "╰") {
+		t.Error("box should have bottom-left corner")
+	}
+	if !strings.Contains(box, "Allow") {
+		t.Error("box should contain the question")
+	}
+	// Diff is no longer shown in the floating box (it's in the viewport above).
+	if strings.Contains(box, "$ ls -la") {
+		t.Error("box should NOT contain the command preview (diff is in viewport)")
+	}
+	if !strings.Contains(box, "y/n/a") {
+		t.Error("box should contain key hints")
+	}
+}
+
+func TestRenderFloatingBoxPlanConfirm(t *testing.T) {
+	p := newPlanConfirmPrompt()
+	box := p.renderFloatingBox(60)
+	if !strings.Contains(box, "╭") {
+		t.Error("box should have rounded corners")
+	}
+	if !strings.Contains(box, "Confirm mode") {
+		t.Error("box should contain plan confirm message")
+	}
+	if !strings.Contains(box, "y/n") {
+		t.Error("box should contain key hints")
+	}
+}
+
+func TestRenderFloatingBoxChoice(t *testing.T) {
+	choices := []string{"Option A", "Option B", "Other"}
+	p := newChoicePrompt("Which approach?", choices)
+	box := p.renderFloatingBox(60)
+	if !strings.Contains(box, "Which approach?") {
+		t.Error("box should contain the question")
+	}
+	if !strings.Contains(box, "Option A") {
+		t.Error("box should contain choice A")
+	}
+	if !strings.Contains(box, "Option B") {
+		t.Error("box should contain choice B")
+	}
+	if !strings.Contains(box, "╭") {
+		t.Error("box should have rounded corners")
+	}
+}
+
+func TestOverlayBottomCenter(t *testing.T) {
+	// 5-line base, 3-line box
+	base := "line1\nline2\nline3\nline4\nline5"
+	box := "AAA\nBBB\nCCC"
+	result := overlayBottomCenter(base, box, 10, 5)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 5 {
+		t.Errorf("expected 5 lines, got %d", len(lines))
+	}
+	// Box should appear at rows 1-3 (bottom - 3 - 1 = 1)
+	if !strings.Contains(lines[1], "AAA") {
+		t.Errorf("row 1 should contain box line 1, got %q", lines[1])
+	}
+	if !strings.Contains(lines[3], "CCC") {
+		t.Errorf("row 3 should contain box line 3, got %q", lines[3])
+	}
+}

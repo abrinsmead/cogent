@@ -1563,8 +1563,17 @@ func (m tuiModel) View() tea.View {
 			viewportContent = overlayHUD(viewportContent, hudLines, m.width)
 		}
 	}
+
+	// Overlay floating confirmation/choice box at the bottom of the viewport,
+	// full width (matching the input bar) and anchored just above it.
+	if s.state == tuiStatePrompt && s.prompt != nil && !s.prompt.freeform {
+		boxMaxWidth := innerWidth + 2 // match the input bar outer width (border included)
+		box := s.prompt.renderFloatingBox(boxMaxWidth)
+		vpHeight := s.output.Height()
+		viewportContent = overlayBottomLeft(viewportContent, box, m.width, vpHeight)
+	}
 	b.WriteString(viewportContent)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
 	// Build the prompt content
 	var promptContent string
@@ -2061,6 +2070,11 @@ func tuiRenderDiff(name string, input map[string]any) string {
 		lines = append(lines, raw)
 	case "bash":
 		lines = append(lines, tuiDim.Render("  $ "+str("command")))
+	case "dispatch":
+		task := str("task")
+		if task != "" {
+			lines = append(lines, tuiDim.Render("  → "+task))
+		}
 	}
 
 	return strings.Join(lines, "\n")

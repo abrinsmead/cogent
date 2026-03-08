@@ -39,6 +39,12 @@ func SummarizeConfirm(name string, input map[string]any) string {
 			summary = summary[:80] + "..."
 		}
 	}
+	if summary == "" {
+		summary = str("task")
+		if len(summary) > 80 {
+			summary = summary[:80] + "..."
+		}
+	}
 	return summary
 }
 
