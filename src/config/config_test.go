@@ -71,3 +71,67 @@ func TestLoadFileMissing(t *testing.T) {
 		t.Errorf("missing file should return nil, got: %v", err)
 	}
 }
+
+func TestProjectLocalOverridesGlobal(t *testing.T) {
+	// Set up a fake home with global settings
+	globalDir := t.TempDir()
+	globalSettingsDir := filepath.Join(globalDir, ".cogent")
+	os.MkdirAll(globalSettingsDir, 0755)
+	os.WriteFile(filepath.Join(globalSettingsDir, "settings"), []byte("MY_VAR=global_value\nGLOBAL_ONLY=from_global\n"), 0644)
+
+	// Set up a project dir with local settings
+	projectDir := t.TempDir()
+	localSettingsDir := filepath.Join(projectDir, ".cogent")
+	os.MkdirAll(localSettingsDir, 0755)
+	os.WriteFile(filepath.Join(localSettingsDir, "settings"), []byte("MY_VAR=local_value\n"), 0644)
+
+	// Clear env
+	for _, key := range []string{"MY_VAR", "GLOBAL_ONLY"} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+
+	// Load project-local first (higher priority)
+	if err := loadFile(filepath.Join(localSettingsDir, "settings")); err != nil {
+		t.Fatal(err)
+	}
+	// Then global (lower priority — won't override)
+	if err := loadFile(filepath.Join(globalSettingsDir, "settings")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := os.Getenv("MY_VAR"); got != "local_value" {
+		t.Errorf("MY_VAR = %q, want %q (project-local should win over global)", got, "local_value")
+	}
+	if got := os.Getenv("GLOBAL_ONLY"); got != "from_global" {
+		t.Errorf("GLOBAL_ONLY = %q, want %q (global-only keys should still load)", got, "from_global")
+	}
+}
+
+func TestLoadProjectSettings(t *testing.T) {
+	// Create a project dir with .cogent/settings
+	projectDir := t.TempDir()
+	settingsDir := filepath.Join(projectDir, ".cogent")
+	os.MkdirAll(settingsDir, 0755)
+	os.WriteFile(filepath.Join(settingsDir, "settings"), []byte("PROJECT_KEY=project_value\n"), 0644)
+
+	// Create a subdirectory to test walk-up behavior
+	subDir := filepath.Join(projectDir, "src", "pkg")
+	os.MkdirAll(subDir, 0755)
+
+	// Clear env and cd into subdirectory
+	t.Setenv("PROJECT_KEY", "")
+	os.Unsetenv("PROJECT_KEY")
+
+	origDir, _ := os.Getwd()
+	os.Chdir(subDir)
+	defer os.Chdir(origDir)
+
+	if err := loadProjectSettings(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := os.Getenv("PROJECT_KEY"); got != "project_value" {
+		t.Errorf("PROJECT_KEY = %q, want %q (should find .cogent/settings walking up)", got, "project_value")
+	}
+}
