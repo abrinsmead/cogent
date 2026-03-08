@@ -748,7 +748,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// continuations (digits, ';', '<', 'M', 'm').
 	if msg.Text != "" {
 		r := rune(msg.Text[0])
-		if r < 0x20 || r == 0x7f || r == '[' {
+		if r < 0x20 || r == 0x7f {
 			m.escFilterUntil = time.Now().Add(50 * time.Millisecond)
 			return m, nil
 		}
@@ -1805,7 +1805,7 @@ func isEscFragment(r rune) bool {
 		return true
 	}
 	switch r {
-	case ';', '<', 'M', 'm', '?', '~':
+	case '[', ';', '<', 'M', 'm', '?', '~':
 		return true
 	}
 	return false
