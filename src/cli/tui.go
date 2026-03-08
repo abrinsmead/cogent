@@ -1839,6 +1839,36 @@ func tuiRenderDiff(name string, input map[string]any) string {
 
 // ─── Git helpers ────────────────────────────────────────────────────────────
 
+// gitCache caches expensive git subprocess results to avoid spawning
+// processes on every View() render (e.g. during rapid mouse scrolling).
+var gitCache struct {
+	dir      string
+	status   string // rendered git status string (branch + dirty indicator)
+	diffStat string // rendered "+N/-M" string
+	expires  time.Time
+}
+
+const gitCacheTTL = 2 * time.Second
+
+// cachedGitStatus returns the rendered git status and diff stat strings,
+// using a cache to avoid shelling out on every frame.
+func cachedGitStatus(cwd string) (status, diffStat string) {
+	now := time.Now()
+	if gitCache.dir == cwd && now.Before(gitCache.expires) {
+		return gitCache.status, gitCache.diffStat
+	}
+	status = renderGitStatus(cwd)
+	diffStat = ""
+	if status != "" {
+		diffStat = gitDiffStat(cwd)
+	}
+	gitCache.dir = cwd
+	gitCache.status = status
+	gitCache.diffStat = diffStat
+	gitCache.expires = now.Add(gitCacheTTL)
+	return status, diffStat
+}
+
 func renderGitStatus(cwd string) string {
 	branch := gitBranch(cwd)
 	if branch == "" {

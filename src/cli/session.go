@@ -344,7 +344,7 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 	pwd := shortenPath(cwd)
 	pwdStr := tuiStatusValue.Render(pwd)
 
-	gitStr := renderGitStatus(cwd)
+	gitStr, gitDiff := cachedGitStatus(cwd)
 
 	left := tuiStatusBar.Render(" ") +
 		tuiStatusBar.Render("mod ") + model + sep +
@@ -354,8 +354,8 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 
 	if gitStr != "" {
 		left += sep + gitStr
-		if stat := gitDiffStat(cwd); stat != "" {
-			left += " " + stat
+		if gitDiff != "" {
+			left += " " + gitDiff
 		}
 	}
 
@@ -399,11 +399,11 @@ func (s *session) renderHUD(client *api.Client, cwd string) []string {
 
 	lines := []string{modelLine, contextLine, costLine, pwdLine}
 
-	gitStr := renderGitStatus(cwd)
+	gitStr, gitDiff := cachedGitStatus(cwd)
 	if gitStr != "" {
 		lines = append(lines, gitStr)
-		if stat := gitDiffStat(cwd); stat != "" {
-			lines = append(lines, tuiDim.Render("dif ")+stat)
+		if gitDiff != "" {
+			lines = append(lines, tuiDim.Render("dif ")+gitDiff)
 		}
 	}
 
