@@ -29,9 +29,10 @@ type session struct {
 	nameSet   bool // true if user explicitly renamed via /rename
 	createdAt time.Time
 
-	agent   *agent.Agent
-	output  viewport.Model
-	input   textarea.Model
+	provider api.Provider    // per-session provider (each session can use a different model)
+	agent    *agent.Agent
+	output   viewport.Model
+	input    textarea.Model
 	slines  []line   // structured lines (persisted)
 	rlines  []string // rendered lines (for viewport display)
 	state   tuiState
@@ -56,7 +57,7 @@ type session struct {
 // newSession creates a session with its own agent, textarea, and viewport.
 // The unified msgCh is shared across all sessions — callbacks tag messages
 // with the session ID via sessionMsg.
-func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *session {
+func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question or press Shift+Tab to change modes"
 	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
@@ -93,6 +94,7 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		persistID:   generatePersistID(),
 		name:        "Default",
 		createdAt:   time.Now(),
+		provider:    provider,
 		input:       ta,
 		output:      vp,
 		state:       tuiStateInput,
@@ -102,7 +104,7 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		s.name = fmt.Sprintf("Session %d", id+1)
 	}
 
-	s.agent = agent.New(client, cwd,
+	s.agent = agent.New(provider, cwd,
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineText, Data: text}}}
 		}),
@@ -367,12 +369,13 @@ func (s *session) renderModeBar() string {
 }
 
 // renderStatusBar builds the status bar content for this session.
-func (s *session) renderStatusBar(client *api.Client, cwd string) string {
+func (s *session) renderStatusBar(cwd string) string {
 	sep := tuiStatusBar.Render("  |  ")
 
-	model := tuiStatusKey.Render(client.Model())
+	info := s.provider.Info()
+	model := tuiStatusKey.Render(info.ProviderID + "/" + info.Model)
 
-	contextTotal := client.ContextWindow()
+	contextTotal := info.ContextWindow
 	contextStr := tuiStatusValue.Render(fmt.Sprintf("%s/%s",
 		formatTokens(s.contextUsed), formatTokens(contextTotal)))
 
@@ -403,13 +406,14 @@ func (s *session) renderStatusBar(client *api.Client, cwd string) string {
 
 // renderHUD builds the floating HUD lines for the top-right overlay.
 // Returns styled lines (without the border) — the caller wraps them in the overlay.
-func (s *session) renderHUD(client *api.Client, cwd string) []string {
+func (s *session) renderHUD(cwd string) []string {
 	dim := tuiDim
 	key := tuiStatusKey
 	val := tuiStatusValue
 
-	model := key.Render(client.Model())
-	contextTotal := client.ContextWindow()
+	info := s.provider.Info()
+	model := key.Render(info.ProviderID + "/" + info.Model)
+	contextTotal := info.ContextWindow
 	contextPct := 0
 	if contextTotal > 0 {
 		contextPct = s.contextUsed * 100 / contextTotal

@@ -17,7 +17,8 @@ type sessionData struct {
 	ID             string        `json:"id"`
 	Name           string        `json:"name"`
 	NameSet        bool          `json:"name_set,omitempty"`
-	TabOrder       int           `json:"tab_order"`        // 0 = no tab (closed), 1+ = tab position
+	Model          string        `json:"model,omitempty"` // "provider/model" e.g. "anthropic/claude-opus-4-6"
+	TabOrder       int           `json:"tab_order"`       // 0 = no tab (closed), 1+ = tab position
 	Messages       []api.Message `json:"messages,omitempty"`
 	PermissionMode string        `json:"permission_mode"`
 	AllowedTools   []string      `json:"allowed_tools,omitempty"`
@@ -52,10 +53,12 @@ func saveSession(cwd string, s *session, tabOrder int) error {
 	}
 
 	now := time.Now()
+	info := s.provider.Info()
 	data := sessionData{
 		ID:             s.persistID,
 		Name:           s.name,
 		NameSet:        s.nameSet,
+		Model:          info.ProviderID + "/" + info.Model,
 		TabOrder:       tabOrder,
 		Messages:       s.agent.Messages(),
 		PermissionMode: s.agent.GetPermissionMode().String(),

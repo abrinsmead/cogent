@@ -56,7 +56,7 @@ func main() {
 	}
 }
 
-func setup() (cwd string, client *api.Client, err error) {
+func setup() (cwd string, provider api.Provider, err error) {
 	cwd, err = os.Getwd()
 	if err != nil {
 		return "", nil, fmt.Errorf("cannot determine working directory: %w", err)
@@ -64,36 +64,37 @@ func setup() (cwd string, client *api.Client, err error) {
 	if err := config.Load(); err != nil {
 		return "", nil, fmt.Errorf("loading global settings: %w", err)
 	}
-	client, err = api.NewClient()
+	spec := api.DefaultModelSpec()
+	provider, err = api.NewProvider(spec)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w\nSet ANTHROPIC_API_KEY in the environment or in ~/.cogent/settings", err)
+		return "", nil, fmt.Errorf("%w\nSet API keys in the environment or in ~/.cogent/settings", err)
 	}
-	return cwd, client, nil
+	return cwd, provider, nil
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
-	cwd, client, err := setup()
+	cwd, provider, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewTUI(client, cwd, prompt).Run()
+	return cli.NewTUI(provider, cwd, prompt).Run()
 }
 
 func runREPL(cmd *cobra.Command, args []string) error {
-	cwd, client, err := setup()
+	cwd, provider, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewInteractive(client, cwd, prompt).Run()
+	return cli.NewInteractive(provider, cwd, prompt).Run()
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
 	if prompt == "" {
 		return fmt.Errorf("agent mode requires --prompt: cogent agent --prompt \"...\"")
 	}
-	cwd, client, err := setup()
+	cwd, provider, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewHeadless(client, cwd, prompt).Run()
+	return cli.NewHeadless(provider, cwd, prompt).Run()
 }
