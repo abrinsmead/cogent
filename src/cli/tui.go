@@ -800,6 +800,8 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.agent.Reset()
 			s.slines = nil
 			s.rlines = nil
+			s.totalCost = 0
+			s.contextUsed = 0
 			s.output.SetContent("")
 			s.appendLine(line{Type: lineInfo, Data: "Conversation cleared."})
 			deleteSessionFile(m.cwd, s.persistID)
