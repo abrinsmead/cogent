@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/anthropics/agent/agent"
@@ -142,7 +142,7 @@ func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
 
 func (t *TUI) Run() error {
 	m := newTUIModel(t.client, t.cwd, t.prompt)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	_, err := p.Run()
 	return err
 }
@@ -430,20 +430,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Main UI phase ───────────────────────────────────────────────────
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		tm, cmd := m.handleKey(msg)
 		return tm, cmd
 
-	case tea.MouseMsg:
+	case tea.MouseWheelMsg:
 		s := m.cur()
 		switch msg.Button {
-		case tea.MouseButtonWheelUp:
+		case tea.MouseWheelUp:
 			s.output.ScrollUp(3)
 			s.scrollback = true
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
-		case tea.MouseButtonWheelLeft, tea.MouseButtonWheelRight:
+		case tea.MouseWheelLeft, tea.MouseWheelRight:
 			// Ignore horizontal scroll (trackpad side-to-side gestures).
 		}
 		return m, nil
@@ -483,7 +483,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Only forward key messages to the textarea — other message types
 	// (ticks, window size, etc.) should not reach the input widget.
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		s := m.cur()
 		if s.state == tuiStateInput {
 			var cmd tea.Cmd
@@ -504,7 +504,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleKey processes all key events.
-func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
 	// Tab management keys — work in any state
@@ -527,9 +527,9 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Alt+1..9 — jump to tab by number
-	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-		r := msg.Runes[0]
-		if msg.Alt && r >= '1' && r <= '9' {
+	if msg.Text != "" && len(msg.Text) == 1 {
+		r := rune(msg.Text[0])
+		if msg.Mod.Contains(tea.ModAlt) && r >= '1' && r <= '9' {
 			idx := int(r - '1')
 			if idx < len(m.sessions) {
 				m.switchToSession(idx)
@@ -550,8 +550,8 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Tab bar focused — arrow keys navigate tabs
 	if m.tabFocused {
-		switch msg.Type {
-		case tea.KeyRight:
+		switch msg.String() {
+		case "right":
 			if m.newTabFocused {
 				// Already at the rightmost element
 				return m, nil
@@ -564,7 +564,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.scrollTabsToActive()
 			}
 			return m, nil
-		case tea.KeyLeft:
+		case "left":
 			if m.newTabFocused {
 				m.newTabFocused = false
 				m.scrollTabsToActive()
@@ -574,7 +574,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchToSession(m.active - 1)
 			}
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			if m.newTabFocused {
 				// Activate the "+ New Session" button
 				m.newTabFocused = false
@@ -593,7 +593,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.input.Focus()
 			}
 			return m, textarea.Blink
-		case tea.KeyTab, tea.KeyEsc:
+		case "tab", "esc":
 			// Return focus to input
 			m.tabFocused = false
 			m.newTabFocused = false
@@ -601,7 +601,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				s.input.Focus()
 			}
 			return m, textarea.Blink
-		case tea.KeyCtrlC:
+		case "ctrl+c":
 			if s.state == tuiStateRunning {
 				if s.cancelFn != nil {
 					s.cancelFn()
@@ -625,15 +625,15 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab key toggles focus to the tab bar
-	if msg.Type == tea.KeyTab && !m.tabFocused && s.state != tuiStateTasks {
+	if msg.String() == "tab" && !m.tabFocused && s.state != tuiStateTasks {
 		m.tabFocused = true
 		s.input.Blur()
 		return m, nil
 	}
 
 	// Shift+Arrow — switch tabs instantly
-	switch msg.Type {
-	case tea.KeyShiftRight:
+	switch msg.String() {
+	case "shift+right":
 		if m.newTabFocused {
 			// Already at the rightmost element
 			return m, nil
@@ -648,7 +648,7 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scrollTabsToActive()
 		}
 		return m, nil
-	case tea.KeyShiftLeft:
+	case "shift+left":
 		if m.newTabFocused {
 			m.newTabFocused = false
 			m.tabFocused = false
@@ -665,28 +665,28 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Scrollback keys: PgUp/PgDn/Up/Down work in any state.
-	switch msg.Type {
-	case tea.KeyPgUp:
+	switch msg.String() {
+	case "pgup":
 		s.output.PageUp()
 		s.scrollback = true
 		return m, nil
-	case tea.KeyPgDown:
+	case "pgdown":
 		s.output.PageDown()
 		s.scrollback = !s.output.AtBottom()
 		return m, nil
-	case tea.KeyUp:
+	case "up":
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollUp(3)
 			s.scrollback = true
 			return m, nil
 		}
-	case tea.KeyDown:
+	case "down":
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollDown(3)
 			s.scrollback = !s.output.AtBottom()
 			return m, nil
 		}
-	case tea.KeyShiftTab:
+	case "shift+tab":
 		if s.state == tuiStateInput || s.state == tuiStateRunning {
 			newMode := agent.CyclePermissionMode(s.agent.GetPermissionMode())
 			s.agent.SetPermissionMode(newMode)
@@ -714,17 +714,17 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
 	// Filter out escape sequence fragments that Bubble Tea couldn't parse.
 	// With mouse tracking enabled, partial SGR sequences (\x1b[<Cb;Cx;CyM)
-	// can arrive split across multiple KeyRunes messages. We use a time-based
+	// can arrive split across multiple KeyPressMsg messages. We use a time-based
 	// filter: when we see the start of a fragment (control chars, '['), we
 	// swallow any subsequent runes within 50ms that look like sequence
 	// continuations (digits, ';', '<', 'M', 'm').
-	if msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
-		r := msg.Runes[0]
+	if msg.Text != "" {
+		r := rune(msg.Text[0])
 		if r < 0x20 || r == 0x7f || r == '[' {
 			m.escFilterUntil = time.Now().Add(50 * time.Millisecond)
 			return m, nil
@@ -733,12 +733,12 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if msg.Type == tea.KeyEscape {
+	if msg.String() == "esc" {
 		m.escFilterUntil = time.Now().Add(50 * time.Millisecond)
 	}
 
-	switch msg.Type {
-	case tea.KeyCtrlC:
+	switch msg.String() {
+	case "ctrl+c":
 		if s.state == tuiStateRunning {
 			if s.cancelFn != nil {
 				s.cancelFn()
@@ -751,7 +751,7 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 
-	case tea.KeyEnter:
+	case "enter":
 		value := strings.TrimSpace(s.input.Value())
 		if value == "" {
 			return m, nil
@@ -858,13 +858,13 @@ func (m *tuiModel) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 	if s.confirm == nil {
 		return m, nil
 	}
-	switch msg.Type {
-	case tea.KeyCtrlC:
+	switch msg.String() {
+	case "ctrl+c":
 		s.appendLine(line{Type: lineConfirmDenyInt})
 		s.confirm.reply <- agent.ConfirmDeny
 		s.confirm = nil
@@ -875,36 +875,27 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.state = tuiStateRunning
 		return m, m.waitForMsg()
 
-	case tea.KeyEnter:
+	case "enter", "y", "Y":
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.confirm.reply <- agent.ConfirmAllow
 		s.confirm = nil
 		s.state = tuiStateRunning
 		return m, m.waitForMsg()
 
-	case tea.KeyRunes:
-		ch := strings.ToLower(string(msg.Runes))
-		switch ch {
-		case "y":
-			s.appendLine(line{Type: lineConfirmAllow})
-			s.confirm.reply <- agent.ConfirmAllow
-			s.confirm = nil
-			s.state = tuiStateRunning
-			return m, m.waitForMsg()
-		case "n":
-			s.appendLine(line{Type: lineConfirmDeny})
-			s.confirm.reply <- agent.ConfirmDeny
-			s.confirm = nil
-			s.state = tuiStateRunning
-			return m, m.waitForMsg()
-		case "a":
-			toolName := s.confirm.name
-			s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
-			s.confirm.reply <- agent.ConfirmAlways
-			s.confirm = nil
-			s.state = tuiStateRunning
-			return m, m.waitForMsg()
-		}
+	case "n", "N":
+		s.appendLine(line{Type: lineConfirmDeny})
+		s.confirm.reply <- agent.ConfirmDeny
+		s.confirm = nil
+		s.state = tuiStateRunning
+		return m, m.waitForMsg()
+
+	case "a", "A":
+		toolName := s.confirm.name
+		s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
+		s.confirm.reply <- agent.ConfirmAlways
+		s.confirm = nil
+		s.state = tuiStateRunning
+		return m, m.waitForMsg()
 	}
 	return m, nil
 }
@@ -912,7 +903,7 @@ func (m *tuiModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handlePlanConfirm processes the "Switch to Confirm mode and execute?" prompt
 // shown after planning completes. y/Enter switches to Confirm mode and re-sends
 // the agent's plan as a user instruction. n/Esc returns to normal input.
-func (m *tuiModel) handlePlanConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handlePlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
 	accept := func() (tea.Model, tea.Cmd) {
@@ -938,15 +929,15 @@ func (m *tuiModel) handlePlanConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textarea.Blink
 	}
 
-	switch msg.Type {
-	case tea.KeyEnter:
+	switch msg.String() {
+	case "enter":
 		return accept()
-	case tea.KeyEsc:
+	case "esc":
 		return decline()
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		return decline()
-	case tea.KeyRunes:
-		ch := strings.ToLower(string(msg.Runes))
+	default:
+		ch := strings.ToLower(msg.Text)
 		switch ch {
 		case "y":
 			return accept()
@@ -958,7 +949,7 @@ func (m *tuiModel) handlePlanConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleTasks processes key events while the task browser modal is open.
-func (m *tuiModel) handleTasks(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleTasks(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 	if s.taskModal == nil {
 		s.state = tuiStateInput
@@ -966,8 +957,8 @@ func (m *tuiModel) handleTasks(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch msg.String() {
+	case "esc":
 		// Check if we're already at the top level before calling back
 		atTopLevel := !s.taskModal.showDetail && s.taskModal.groupKey == ""
 		if atTopLevel {
@@ -980,23 +971,23 @@ func (m *tuiModel) handleTasks(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.taskModal.back()
 		return m, nil
 
-	case tea.KeyUp:
+	case "up":
 		s.taskModal.up()
 		return m, nil
 
-	case tea.KeyDown:
+	case "down":
 		s.taskModal.down()
 		return m, nil
 
-	case tea.KeyTab:
+	case "tab":
 		s.taskModal.switchView()
 		return m, nil
 
-	case tea.KeyBackspace:
+	case "backspace":
 		s.taskModal.back()
 		return m, nil
 
-	case tea.KeyEnter:
+	case "enter":
 		// If viewing detail, insert into prompt
 		if s.taskModal.showDetail {
 			t := s.taskModal.selectedItem()
@@ -1013,7 +1004,7 @@ func (m *tuiModel) handleTasks(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		s.taskModal.enter()
 		return m, nil
 
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		s.taskModal = nil
 		s.state = tuiStateInput
 		s.input.Focus()
@@ -1318,14 +1309,18 @@ func sessionPreview(sd sessionData) string {
 
 // ─── View ────────────────────────────────────────────────────────────────────
 
-func (m tuiModel) View() string {
+func (m tuiModel) View() tea.View {
 	if m.quitting {
-		return tuiDim.Render("Goodbye!") + "\n"
+		v := tea.NewView(tuiDim.Render("Goodbye!") + "\n")
+		return v
 	}
 
 	// Splash screen
 	if m.splash != nil {
-		return m.splash.View()
+		v := tea.NewView(m.splash.View())
+		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
+		return v
 	}
 
 	s := m.sessions[m.active]
@@ -1464,7 +1459,11 @@ func (m tuiModel) View() string {
 		}
 	}
 
-	return view
+	v := tea.NewView(view)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "cogent — " + m.cur().name
+	return v
 }
 
 // ensureActiveTabVisible adjusts tabScroll so the active tab (or the new-tab
@@ -1564,15 +1563,12 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			style = tuiTabInactive
 		}
 
-		var dotColor lipgloss.TerminalColor
-		if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
-			dotColor = lipgloss.Color("1")
-		} else if s.state == tuiStateRunning {
-			dotColor = lipgloss.Color("3")
-		}
 		dot := ""
-		if dotColor != nil {
-			dotStyle := lipgloss.NewStyle().Foreground(dotColor)
+		if s.state == tuiStateConfirm || s.state == tuiStatePlanConfirm {
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+			dot = dotStyle.Render("●") + " "
+		} else if s.state == tuiStateRunning {
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		}
 
@@ -1796,7 +1792,7 @@ func (m *tuiModel) scrollTabsToActive() {
 // correctly, but their viewport height is deferred until they become active.
 func (m *tuiModel) resizeAll() {
 	for _, s := range m.sessions {
-		s.output.Width = m.width
+		s.output.SetWidth(m.width)
 		s.input.SetWidth(m.width - 2)
 	}
 	// Full height layout for the active session.

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 
@@ -59,10 +59,9 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 	ta.CharLimit = 0
 	ta.SetHeight(1)
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.Focus()
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SetContent("")
 	vp.KeyMap = viewport.KeyMap{
 		PageDown:     key.NewBinding(key.WithDisabled()),
@@ -159,7 +158,7 @@ func (s *session) rebuildRendered() {
 // Lines prefixed with noWrapMarker (from tables, etc.) are truncated
 // instead of soft-wrapped so box-drawing structure is preserved.
 func (s *session) refreshContent() {
-	w := s.output.Width
+	w := s.output.Width()
 	if w < 1 {
 		w = 80
 	}
@@ -304,12 +303,12 @@ func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.C
 
 // resize adjusts the session's viewport and input to the given dimensions.
 func (s *session) resize(width, height, chrome int) {
-	s.output.Width = width
+	s.output.SetWidth(width)
 	vpHeight := height - chrome
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
-	s.output.Height = vpHeight
+	s.output.SetHeight(vpHeight)
 	s.input.SetWidth(width - 2)
 }
 
