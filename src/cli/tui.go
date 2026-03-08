@@ -708,6 +708,8 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
 			}
 			s.appendLine(line{Type: lineModeChange, Data: newMode.String()})
+			s.updateModeTagWidth()
+			s.resize(m.width, m.height, 7+s.inputHeight)
 			return m, nil
 		}
 	}
@@ -1394,7 +1396,9 @@ func (m tuiModel) View() tea.View {
 	b.WriteString(topBorder)
 	b.WriteString("\n")
 
-	// Render prompt lines with mode prefix on first line, hint right-justified
+	// Render prompt lines with mode prefix on first line, hint right-justified.
+	// The textarea width is already reduced by modeTagWidth, so each line
+	// from the textarea fits in (innerWidth - modeTagWidth).
 	promptLines := strings.Split(promptContent, "\n")
 	for i, pl := range promptLines {
 		plWidth := lipgloss.Width(pl)
@@ -1414,10 +1418,9 @@ func (m tuiModel) View() tea.View {
 					pl = ansi.Truncate(prefixed, innerWidth, "")
 				}
 			}
-		} else if plWidth < innerWidth {
-			// Indent continuation lines to align with content after mode tag
-			indent := strings.Repeat(" ", modeTagWidth)
-			pl = indent + pl
+		} else {
+			// Continuation lines: pad with spaces to align with text after mode tag
+			pl = strings.Repeat(" ", modeTagWidth) + pl
 			plWidth = lipgloss.Width(pl)
 			if plWidth < innerWidth {
 				pl += strings.Repeat(" ", innerWidth-plWidth)
@@ -1803,7 +1806,7 @@ func (m *tuiModel) scrollTabsToActive() {
 func (m *tuiModel) resizeAll() {
 	for _, s := range m.sessions {
 		s.output.SetWidth(m.width)
-		s.input.SetWidth(m.width - 2)
+		s.input.SetWidth(m.width - 2 - s.modeTagWidth)
 	}
 	// Full height layout for the active session.
 	s := m.cur()

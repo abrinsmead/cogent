@@ -37,9 +37,10 @@ type session struct {
 	state   tuiState
 	confirm *tuiConfirmMsg
 
-	cancelFn    context.CancelFunc
-	inputHeight int
-	scrollback  bool
+	cancelFn     context.CancelFunc
+	inputHeight  int
+	modeTagWidth int // visual width of " Mode " prefix in prompt box
+	scrollback   bool
 
 	// Task browser modal
 	taskModal *taskModal
@@ -89,6 +90,7 @@ func newSession(id int, client *api.Client, cwd string, msgCh chan tea.Msg) *ses
 		state:       tuiStateInput,
 		inputHeight: 1,
 	}
+	s.updateModeTagWidth()
 
 	if id > 0 {
 		s.name = fmt.Sprintf("Session %d", id+1)
@@ -241,7 +243,8 @@ func (s *session) inputVisualLines() int {
 	if value == "" {
 		return 1
 	}
-	// The textarea wraps text at width minus prompt width (2 chars).
+	// The textarea width is already reduced by modeTagWidth in resize(),
+	// so Width() reflects the actual text area. Subtract the prompt (2 chars).
 	wrapWidth := s.input.Width() - 2
 	if wrapWidth < 1 {
 		wrapWidth = 1
@@ -315,7 +318,13 @@ func (s *session) resize(width, height, chrome int) {
 		vpHeight = 1
 	}
 	s.output.SetHeight(vpHeight)
-	s.input.SetWidth(width - 2)
+	s.input.SetWidth(width - 2 - s.modeTagWidth)
+}
+
+// updateModeTagWidth recomputes the visual width of the mode prefix
+// (" Plan ", " Confirm ", etc.) and adjusts the textarea width accordingly.
+func (s *session) updateModeTagWidth() {
+	s.modeTagWidth = lipgloss.Width(" " + s.renderModeBar() + " ")
 }
 
 // renderModeBar returns the styled mode label for the mode bar section.
