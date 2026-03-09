@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cogent — A coding agent for the terminal</title>
+  <meta name="description" content="A lightweight terminal coding agent with multi-provider LLM support, tabbed sessions, sub-agents, and custom tools. Written in Go." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #09090b;
+      --surface: #111113;
+      --surface-2: #18181b;
+      --surface-3: #1f1f23;
+      --border: rgba(255,255,255,0.06);
+      --border-hi: rgba(255,255,255,0.12);
+      --text: #fafafa;
+      --text-2: #a1a1aa;
+      --text-3: #63636e;
+      --blue: #6b8afd;
+      --teal: #34d399;
+      --amber: #fbbf24;
+      --red: #ef4444;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --max: 1060px;
+      --r: 14px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; }
+    html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+    body {
+      font-family: var(--sans);
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.6;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    .w { max-width: var(--max); margin: 0 auto; padding: 0 28px; }
+
+    /* ---- Nav ---- */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(9,9,11,0.8);
+      backdrop-filter: blur(20px) saturate(1.4);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .logo {
+      font-weight: 800; font-size: 1.15rem; letter-spacing: -0.03em;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .logo-mark {
+      width: 30px; height: 30px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--blue), var(--teal));
+      display: grid; place-items: center;
+      font-size: 0.72rem; font-weight: 900; color: var(--bg);
+    }
+    .nav-r { display: flex; align-items: center; gap: 28px; font-size: 0.9rem; color: var(--text-2); }
+    .nav-r a:hover { color: var(--text); }
+    .gh {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 8px 16px; border-radius: 10px; border: 1px solid var(--border-hi);
+      font-weight: 600; font-size: 0.88rem; color: var(--text);
+      transition: border-color 0.15s;
+    }
+    .gh:hover { border-color: var(--text-3); }
+    .gh svg { width: 16px; height: 16px; fill: currentColor; }
+
+    /* ---- Hero ---- */
+    .hero { padding: 100px 0 40px; text-align: center; }
+
+    h1 {
+      font-size: clamp(2.8rem, 7.5vw, 5rem);
+      font-weight: 900; letter-spacing: -0.05em;
+      line-height: 1.0; margin: 0 auto 20px;
+    }
+    h1 em {
+      font-style: normal;
+      background: linear-gradient(90deg, var(--blue), var(--teal));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-p {
+      color: var(--text-2); font-size: 1.15rem;
+      max-width: 50ch; margin: 0 auto 40px; line-height: 1.7;
+    }
+    .hero-btns { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 13px 26px; border-radius: 12px;
+      font-size: 0.94rem; font-weight: 700; border: 1px solid transparent;
+      transition: all 0.15s; cursor: pointer;
+    }
+    .btn-p { background: var(--text); color: var(--bg); }
+    .btn-p:hover { opacity: 0.88; }
+    .btn-s { border-color: var(--border-hi); color: var(--text-2); }
+    .btn-s:hover { border-color: var(--text-3); color: var(--text); }
+
+    /* ---- Terminal hero ---- */
+    .term-outer {
+      max-width: 780px; margin: 56px auto 0; position: relative;
+    }
+    .term-outer::before {
+      content: ''; position: absolute; inset: -1px; border-radius: calc(var(--r) + 1px);
+      background: linear-gradient(180deg, rgba(255,255,255,0.1), rgba(255,255,255,0.03));
+      z-index: -1;
+    }
+    .term {
+      background: var(--surface); border-radius: var(--r); overflow: hidden;
+      box-shadow: 0 40px 100px -30px rgba(0,0,0,0.7);
+    }
+    .term-bar {
+      display: flex; align-items: center; gap: 7px;
+      padding: 13px 18px; border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .term-bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+    .term-bar i:nth-child(1) { background: #ff5f57; }
+    .term-bar i:nth-child(2) { background: #febc2e; }
+    .term-bar i:nth-child(3) { background: #28c840; }
+    .term-tabs { display: flex; gap: 2px; margin-left: 14px; }
+    .term-tab {
+      font-family: var(--mono); font-size: 0.72rem; font-weight: 500;
+      padding: 4px 12px; border-radius: 7px; color: var(--text-3);
+    }
+    .term-tab.on { background: var(--surface-3); color: var(--text-2); }
+
+    .term pre {
+      margin: 0; padding: 22px 24px; font-family: var(--mono);
+      font-size: 0.84rem; line-height: 1.8; color: var(--text-2); overflow-x: auto;
+    }
+    .term .g { color: var(--teal); }
+    .term .b { color: var(--blue); }
+    .term .y { color: var(--amber); }
+    .term .w { color: var(--text); }
+    .term .d { color: var(--text-3); }
+
+    .term-status {
+      display: flex; gap: 16px; padding: 10px 24px;
+      border-top: 1px solid var(--border);
+      font-family: var(--mono); font-size: 0.72rem; color: var(--text-3);
+    }
+    .term-status span { display: flex; align-items: center; gap: 5px; }
+    .term-status .lbl { color: var(--text-3); }
+    .term-status .val { color: var(--text-2); }
+    .term-mode {
+      color: var(--bg) !important;
+      background: var(--amber);
+      padding: 1px 7px; border-radius: 4px; font-weight: 600;
+    }
+
+    /* ---- Shared ---- */
+    .sec { padding: 96px 0; }
+    .sec + .sec { border-top: 1px solid var(--border); }
+    .label { font-size: 0.82rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--blue); margin-bottom: 12px; }
+    h2 { font-size: clamp(1.6rem, 3.5vw, 2.5rem); font-weight: 800; letter-spacing: -0.04em; margin-bottom: 12px; }
+    .sub { color: var(--text-2); max-width: 52ch; margin-bottom: 48px; font-size: 1.05rem; line-height: 1.65; }
+
+    /* ---- Bento ---- */
+    .bento {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+    .bento-item {
+      border: 1px solid var(--border); border-radius: var(--r);
+      background: var(--surface); padding: 28px;
+      display: flex; flex-direction: column; justify-content: flex-end;
+    }
+    .bento-item h3 { font-size: 1rem; font-weight: 700; margin-bottom: 6px; }
+    .bento-item p { font-size: 0.88rem; color: var(--text-3); line-height: 1.5; }
+    .bento-item code {
+      font-family: var(--mono); font-size: 0.84em;
+      color: var(--blue); background: rgba(107,138,253,0.08);
+      padding: 2px 7px; border-radius: 5px;
+    }
+
+    .b-wide { grid-column: span 8; }
+    .b-narrow { grid-column: span 4; }
+    .b-half { grid-column: span 6; }
+    .b-third { grid-column: span 4; }
+    .b-full { grid-column: span 12; }
+
+    .bento-item .mini-term {
+      font-family: var(--mono); font-size: 0.78rem; line-height: 1.7;
+      color: var(--text-3); padding: 16px; border-radius: 10px;
+      background: var(--bg); border: 1px solid var(--border);
+      margin-bottom: 18px; overflow-x: auto;
+    }
+
+    .bento-item .kbd-row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px;
+    }
+    .kbd {
+      font-family: var(--mono); font-size: 0.76rem; font-weight: 600;
+      padding: 5px 10px; border-radius: 7px;
+      background: var(--surface-3); border: 1px solid var(--border-hi);
+      color: var(--text-2); white-space: nowrap;
+    }
+
+    /* ---- Modes ---- */
+    .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .mode {
+      border: 1px solid var(--border); border-radius: var(--r);
+      background: var(--surface); padding: 24px;
+    }
+    .mode h3 {
+      font-size: 0.95rem; font-weight: 700; margin-bottom: 8px;
+      display: flex; align-items: center; gap: 9px;
+    }
+    .mode-d {
+      width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+      flex-shrink: 0;
+    }
+    .mode p { font-size: 0.86rem; color: var(--text-3); line-height: 1.5; }
+
+    /* ---- Tools ---- */
+    .tools {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+    }
+    .t {
+      padding: 16px 18px; border-radius: 12px;
+      border: 1px solid var(--border); background: var(--surface);
+      display: flex; align-items: baseline; gap: 12px;
+    }
+    .t-name {
+      font-family: var(--mono); font-size: 0.86rem; font-weight: 600;
+      color: var(--text); white-space: nowrap; min-width: 82px;
+    }
+    .t-desc { font-size: 0.82rem; color: var(--text-3); }
+
+    /* ---- Providers ---- */
+    .prov-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .prov {
+      padding: 12px 22px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface);
+      font-weight: 600; font-size: 0.9rem; color: var(--text-2);
+    }
+
+    /* ---- Install ---- */
+    .install {
+      border: 1px solid var(--border-hi); border-radius: var(--r);
+      background: var(--surface); overflow: hidden;
+      max-width: 640px;
+    }
+    .install pre {
+      margin: 0; padding: 28px 32px; font-family: var(--mono);
+      font-size: 0.88rem; line-height: 2; color: var(--text-2); overflow-x: auto;
+    }
+    .install .c { color: var(--text-3); }
+    .install .k { color: var(--teal); }
+    .install .s { color: var(--amber); }
+    .note { color: var(--text-3); font-size: 0.88rem; margin-top: 16px; }
+    .note code { font-family: var(--mono); font-size: 0.9em; color: var(--blue); }
+
+    /* ---- Footer ---- */
+    footer {
+      padding: 40px 0 56px; border-top: 1px solid var(--border);
+      color: var(--text-3); font-size: 0.86rem;
+    }
+    .foot { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+
+    /* ---- Responsive ---- */
+    @media (max-width: 900px) {
+      .b-wide, .b-narrow, .b-half, .b-third { grid-column: span 6; }
+      .b-full .bento-split { grid-template-columns: 1fr !important; }
+      .modes { grid-template-columns: 1fr 1fr; }
+      .tools { grid-template-columns: 1fr 1fr; }
+      .nav-r .desk { display: none; }
+    }
+    @media (max-width: 640px) {
+      .w { padding: 0 20px; }
+      .hero { padding: 64px 0 32px; }
+      .b-wide, .b-narrow, .b-half, .b-third, .b-full { grid-column: span 12; }
+      .modes { grid-template-columns: 1fr; }
+      .tools { grid-template-columns: 1fr; }
+      .hero-btns { flex-direction: column; align-items: stretch; }
+      .btn { justify-content: center; }
+      .term pre { font-size: 0.76rem; padding: 18px; }
+      .term-status { font-size: 0.66rem; gap: 10px; padding: 8px 18px; flex-wrap: wrap; }
+    }
+
+    /* ---- Reveal ---- */
+    .rv { opacity: 0; transform: translateY(20px); transition: opacity 0.5s, transform 0.5s; }
+    .rv.on { opacity: 1; transform: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="w nav-inner">
+    <a class="logo" href="#">
+      <span class="logo-mark">C</span>
+      cogent
+    </a>
+    <div class="nav-r">
+      <a href="#features" class="desk">Features</a>
+      <a href="#install" class="desk">Install</a>
+      <a class="gh" href="https://github.com/cogent-agent/cogent" target="_blank" rel="noreferrer">
+        <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="w">
+      <h1 class="rv">A coding agent<br>for your <em>terminal</em></h1>
+      <p class="hero-p rv">
+        Read, edit, search, execute, and delegate — from a fast terminal UI.
+        Multi-provider. Tabbed sessions. Custom tools. No browser.
+      </p>
+      <div class="hero-btns rv">
+        <a class="btn btn-p" href="#install">Get started</a>
+        <a class="btn btn-s" href="https://github.com/cogent-agent/cogent" target="_blank" rel="noreferrer">View source</a>
+      </div>
+
+      <div class="term-outer rv">
+        <div class="term">
+          <div class="term-bar">
+            <i></i><i></i><i></i>
+            <div class="term-tabs">
+              <span class="term-tab on">session-1</span>
+              <span class="term-tab">refactor</span>
+            </div>
+          </div>
+          <pre>
+<span class="g">❯</span> <span class="w">fix the off-by-one error in the agent loop</span>
+
+<span class="d">planning... (extended thinking)</span>
+
+<span class="g">✓</span> read src/agent/agent.go <span class="d">(312 lines)</span>
+<span class="g">✓</span> grep "iteration" src/agent/*.go <span class="d">(4 matches)</span>
+
+<span class="b">Plan:</span> <span class="w">The loop counter starts at 0 but the max check uses &lt;= instead</span>
+<span class="w">of &lt;, allowing 51 iterations instead of 50. One-line fix in agent.go:78.</span>
+
+<span class="d">Switch to Confirm mode and execute? [y/n]</span> <span class="w">y</span>
+
+<span class="g">✓</span> edit src/agent/agent.go
+  <span class="d">@@ -78 @@</span>
+  <span style="color:#ef4444">- for i := 0; i <= maxIterations; i++ {</span>
+  <span style="color:#34d399">+ for i := 0; i < maxIterations; i++ {</span>
+
+<span class="g">✓</span> bash <span class="d">cd src && go test ./agent/...</span>
+  <span class="g">PASS</span> <span class="d">ok  agent  0.34s</span></pre>
+          <div class="term-status">
+            <span><span class="lbl">mod</span> <span class="val">claude-opus-4-6</span></span>
+            <span><span class="lbl">ctx</span> <span class="val">28k/200k</span></span>
+            <span><span class="lbl">usd</span> <span class="val">$0.12</span></span>
+            <span><span class="lbl">pwd</span> <span class="val">~/Projects/cogent</span></span>
+            <span><span class="lbl">git</span> <span class="val">main* +1/-1</span></span>
+            <span class="term-mode">Confirm</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Bento features -->
+  <section class="sec" id="features">
+    <div class="w">
+      <div class="label rv">How it works</div>
+      <h2 class="rv">Plan first, then execute</h2>
+      <p class="sub rv">
+        Cogent starts in Plan mode — it reads your code and thinks before touching anything.
+        When the plan looks right, switch to Confirm and let it work.
+      </p>
+
+      <div class="bento">
+        <div class="bento-item b-wide rv">
+          <div class="mini-term">
+<span style="color:var(--text-3)">Shift+Tab to cycle:</span>  <span style="color:var(--blue)">Plan</span> → <span style="color:var(--teal)">Confirm</span> → <span style="color:var(--amber)">YOLO</span> → <span style="color:var(--red)">Terminal</span> → <span style="color:var(--blue)">Plan</span>
+<span style="color:var(--text-3)">Works while idle or while the agent is running.</span></div>
+          <h3>Four permission modes</h3>
+          <p><strong style="color:var(--blue)">Plan</strong> explores read-only with extended thinking.
+             <strong style="color:var(--teal)">Confirm</strong> asks before writes.
+             <strong style="color:var(--amber)">YOLO</strong> auto-approves.
+             <strong style="color:var(--red)">Terminal</strong> pauses the agent for manual shell access.</p>
+        </div>
+        <div class="bento-item b-narrow rv">
+          <h3>Multi-provider</h3>
+          <p>Anthropic, OpenAI, Gemini, OpenRouter. Switch with <code>Ctrl+M</code> mid-session. Each tab can use a different model.</p>
+        </div>
+
+        <div class="bento-item b-narrow rv">
+          <div class="kbd-row">
+            <span class="kbd">Ctrl+T</span>
+            <span class="kbd">Ctrl+W</span>
+            <span class="kbd">Shift+←→</span>
+            <span class="kbd">Alt+1…9</span>
+          </div>
+          <h3>Tabbed sessions</h3>
+          <p>Multiple conversations at once. Sessions auto-persist and restore on launch. Rename with <code>/rename</code>.</p>
+        </div>
+        <div class="bento-item b-wide rv">
+          <div class="mini-term"><span style="color:var(--teal)">dispatch</span> → 3 sub-agents running in parallel
+├─ <span style="color:var(--text-2)">sub-1</span>  refactoring auth module    <span style="color:var(--teal)">✓ done</span>
+├─ <span style="color:var(--text-2)">sub-2</span>  updating API tests         <span style="color:var(--amber)">● running</span>
+└─ <span style="color:var(--text-2)">sub-3</span>  writing migration script   <span style="color:var(--teal)">✓ done</span></div>
+          <h3>Sub-agent delegation</h3>
+          <p>The <code>dispatch</code> tool runs subtasks in parallel, each with its own context window. Confirmations route back to your tab.</p>
+        </div>
+
+        <div class="bento-item b-full rv">
+          <div class="bento-split" style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+            <div>
+              <div class="mini-term">#!/bin/bash
+# @tool linear_issues
+# @description List Linear issues assigned to me
+# @param status string "filter by status"
+# @env LINEAR_API_KEY required "Linear API key"
+# @env LINEAR_USERNAME required "Linear username"
+# @noconfirm
+
+INPUT=$(cat)
+STATUS=$(echo "$INPUT" | jq -r '.status // empty')
+curl -s -X POST https://linear.app/api/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"{ issues(filter: {assignee: …}) { nodes { title } } }\"}"</div>
+            </div>
+            <div style="display:flex;flex-direction:column;justify-content:center;">
+              <h3>Custom tools — no MCP, just scripts</h3>
+              <p style="margin-bottom:14px;">
+                Executable scripts with <code>@</code> directives in comments become agent tools.
+                Any language — bash, Python, Node, whatever has a shebang.
+                Project-local tools go in <code>.cogent/tools/</code>, global ones in <code>~/.cogent/tools/</code>.
+                Env vars live in <code>.cogent/.env</code>.
+              </p>
+              <p style="margin-bottom:14px;">
+                No protocol to implement, no server to run, no JSON schema to write.
+                Input arrives as JSON on stdin, output goes to stdout.
+                Mark read-only tools with <code>@noconfirm</code> — destructive ones require approval by default.
+              </p>
+              <p>
+                <strong style="color:var(--text)">The agent can build its own tools.</strong>
+                Ask it to write a custom tool and it will create the script, add the directives,
+                make it executable, and use it in the same session.
+                Your team's workflows become agent capabilities without any plumbing.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bento-item b-half rv">
+          <h3>AGENTS.md</h3>
+          <p>Put project-specific instructions in an <code>AGENTS.md</code> file. Cogent loads all of them from cwd to root, so monorepo-level context and package-level specifics both apply.</p>
+        </div>
+        <div class="bento-item b-half rv">
+          <h3>Three UI modes</h3>
+          <p>Full-screen <strong>TUI</strong> for interactive work. <strong>REPL</strong> for simplicity. <strong>Headless</strong> for CI, scripts, and pipes — auto-approves everything.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tools -->
+  <section class="sec">
+    <div class="w">
+      <div class="label rv">Built-in tools</div>
+      <h2 class="rv">Nine tools out of the box</h2>
+      <p class="sub rv">Everything the agent needs to explore and modify a codebase. Destructive tools require confirmation. Write paths are sandboxed.</p>
+      <div class="tools rv">
+        <div class="t"><span class="t-name">bash</span><span class="t-desc">Shell commands, configurable timeout</span></div>
+        <div class="t"><span class="t-name">read</span><span class="t-desc">File contents with line numbers</span></div>
+        <div class="t"><span class="t-name">write</span><span class="t-desc">Create/overwrite, sandboxed to cwd</span></div>
+        <div class="t"><span class="t-name">edit</span><span class="t-desc">Search-and-replace, exact match</span></div>
+        <div class="t"><span class="t-name">glob</span><span class="t-desc">Find files by pattern</span></div>
+        <div class="t"><span class="t-name">grep</span><span class="t-desc">Regex search across files</span></div>
+        <div class="t"><span class="t-name">ls</span><span class="t-desc">List directories with sizes</span></div>
+        <div class="t"><span class="t-name">dispatch</span><span class="t-desc">Parallel sub-agent delegation</span></div>
+        <div class="t"><span class="t-name">web_search</span><span class="t-desc">Internet search for current info</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="sec" id="install">
+    <div class="w">
+      <div class="label rv">Get started</div>
+      <h2 class="rv">Three commands</h2>
+      <p class="sub rv">Go 1.24+ and at least one provider API key.</p>
+      <div class="install rv">
+        <pre><span class="c"># Set a provider key</span>
+<span class="k">export</span> ANTHROPIC_API_KEY=<span class="s">"sk-ant-..."</span>
+
+<span class="c"># Install</span>
+git clone https://github.com/cogent-agent/cogent
+<span class="k">cd</span> cogent && make install
+
+<span class="c"># Run</span>
+cogent</pre>
+      </div>
+      <p class="note rv">
+        Keys can also go in <code>~/.cogent/settings</code> or <code>.cogent/settings</code> per project.
+        Also supports <code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="w foot">
+    <span>Cogent — a coding agent for the terminal</span>
+    <a class="gh" href="https://github.com/cogent-agent/cogent" target="_blank" rel="noreferrer" style="padding:7px 14px;font-size:0.84rem">
+      <svg viewBox="0 0 16 16" style="width:14px;height:14px;fill:currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </div>
+</footer>
+
+<script>
+const o = new IntersectionObserver(e => {
+  e.forEach(x => { if (x.isIntersecting) x.target.classList.add('on'); });
+}, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.rv').forEach(el => o.observe(el));
+</script>
+
+</body>
+</html>
