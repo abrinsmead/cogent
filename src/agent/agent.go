@@ -137,6 +137,11 @@ func New(provider api.Provider, cwd string, opts ...Option) *Agent {
 	if tools.CustomToolsExist(cwd) {
 		system += "\n\n" + tools.CustomToolsPrompt
 	}
+	// Load agent skills from .cogent/skills/ directories
+	skills, skillWarnings := tools.DiscoverSkills(tools.SkillDirs(cwd))
+	if prompt := tools.FormatSkillsPrompt(skills); prompt != "" {
+		system += "\n\n" + prompt
+	}
 	a := &Agent{
 		provider:     provider,
 		registry:     registry,
@@ -155,6 +160,9 @@ func New(provider api.Provider, cwd string, opts ...Option) *Agent {
 	}
 	// Surface any custom tool warnings via the text callback
 	for _, w := range registry.Warnings() {
+		a.onText("⚠ " + w)
+	}
+	for _, w := range skillWarnings {
 		a.onText("⚠ " + w)
 	}
 	return a
