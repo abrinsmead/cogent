@@ -38,6 +38,7 @@ func (c *ClarifyTool) Definition() api.ToolDef {
 				"choices": {
 					Type:        "array",
 					Description: "2-5 choices for the user to pick from. The last choice should be an open-ended option like \"Other (I'll explain)\" to allow freeform input.",
+					Items:       &api.Property{Type: "string"},
 				},
 			},
 			Required: []string{"question", "choices"},

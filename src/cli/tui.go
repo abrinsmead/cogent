@@ -121,17 +121,17 @@ func formatUserPrompt(prefix, value string) string {
 
 // TUI is the Bubble Tea full-screen interactive mode.
 type TUI struct {
-	client *api.Client
-	cwd    string
-	prompt string // optional initial prompt to send on startup
+	provider api.Provider
+	cwd      string
+	prompt   string // optional initial prompt to send on startup
 }
 
-func NewTUI(client *api.Client, cwd string, prompt string) *TUI {
-	return &TUI{client: client, cwd: cwd, prompt: prompt}
+func NewTUI(provider api.Provider, cwd string, prompt string) *TUI {
+	return &TUI{provider: provider, cwd: cwd, prompt: prompt}
 }
 
 func (t *TUI) Run() error {
-	m := newTUIModel(t.client, t.cwd, t.prompt)
+	m := newTUIModel(t.provider, t.cwd, t.prompt)
 	p := tea.NewProgram(m)
 	_, err := p.Run()
 	return err
@@ -195,8 +195,8 @@ const (
 const maxInputHeight = 10 // max lines the input area can grow to
 
 type tuiModel struct {
-	client *api.Client
-	cwd    string
+	defaultProvider api.Provider
+	cwd             string
 	width  int
 	height int
 
@@ -249,18 +249,18 @@ func (m *tuiModel) sessionIndexByID(id int) int {
 	return -1
 }
 
-func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
+func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
 	splash := newSplashModel()
 	m := tuiModel{
-		client:        client,
-		cwd:           cwd,
-		msgCh:         msgCh,
-		initialPrompt: prompt,
-		nextID:        0,
-		splash:        &splash,
-		hudMode:        loadHUDMode(cwd),
+		defaultProvider: provider,
+		cwd:             cwd,
+		msgCh:           msgCh,
+		initialPrompt:   prompt,
+		nextID:          0,
+		splash:          &splash,
+		hudMode:         loadHUDMode(cwd),
 	}
 
 	// Auto-restore saved sessions that had open tabs.
@@ -284,7 +284,7 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 		m.active = 0
 	} else {
 		// No saved tab sessions — create a fresh default session
-		s := newSession(m.nextID, client, cwd, msgCh)
+		s := newSession(m.nextID, provider, cwd, msgCh)
 		m.nextID++
 		m.sessions = []*session{s}
 		m.active = 0
@@ -298,7 +298,6 @@ func newTUIModel(client *api.Client, cwd string, prompt string) tuiModel {
 // Sub-agents run as tab-less goroutines with all tools except dispatch.
 // Confirmations and clarify questions are routed to the parent session's tab.
 func (m *tuiModel) wireTools(s *session) {
-	client := m.client
 	cwd := m.cwd
 	msgCh := m.msgCh
 	parentID := s.id
@@ -331,7 +330,17 @@ func (m *tuiModel) wireTools(s *session) {
 			return <-reply, nil
 		}
 
-		ag := agent.New(client, cwd,
+		// Sub-agent uses COGENT_SUBAGENT_MODEL if configured, else parent's provider.
+		subProvider := s.provider
+		subSpec := api.SubagentModelSpec()
+		parentSpec := api.ModelSpec{Provider: s.provider.Info().ProviderID, Model: s.provider.Info().Model}
+		if subSpec != parentSpec {
+			if p, err := api.NewProvider(subSpec); err == nil {
+				subProvider = p
+			}
+		}
+
+		ag := agent.New(subProvider, cwd,
 			agent.WithRegistry(reg),
 			agent.WithPermissionMode(s.agent.GetPermissionMode()),
 			agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
@@ -354,7 +363,7 @@ func (m *tuiModel) wireTools(s *session) {
 
 // createSession creates a new session and adds it to the model.
 func (m *tuiModel) createSession() *session {
-	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
+	s := newSession(m.nextID, m.defaultProvider, m.cwd, m.msgCh)
 	m.nextID++
 	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
@@ -763,6 +772,38 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.resize(m.width, m.height, 7+s.inputHeight)
 			return m, nil
 		}
+	case "ctrl+m":
+		// Cycle through configured models (COGENT_MODELS)
+		if s.state == tuiStateInput || s.state == tuiStateRunning {
+			models := api.ConfiguredModels()
+			if len(models) <= 1 {
+				info := s.provider.Info()
+				s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("Current model: %s/%s  (set COGENT_MODELS to enable cycling, or use /model)", info.ProviderID, info.Model)})
+				return m, nil
+			}
+			if len(models) > 1 {
+				// Find current model in the list and advance to next
+				currentInfo := s.provider.Info()
+				currentSpec := api.ModelSpec{Provider: currentInfo.ProviderID, Model: currentInfo.Model}
+				nextIdx := 0
+				for i, spec := range models {
+					if spec == currentSpec {
+						nextIdx = (i + 1) % len(models)
+						break
+					}
+				}
+				nextSpec := models[nextIdx]
+				if p, err := api.NewProvider(nextSpec); err == nil {
+					s.provider = p
+					s.agent.SetProvider(p)
+					s.contextUsed = 0
+					s.appendLine(line{Type: lineModelChange, Data: nextSpec.String()})
+				} else {
+					s.appendLine(line{Type: lineInfo, Data: "  model switch failed: " + err.Error()})
+				}
+			}
+			return m, nil
+		}
 	}
 
 	switch s.state {
@@ -876,16 +917,37 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /tasks /linear (/lin)"})
+			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /model /sessions /resume /tasks /linear (/lin)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
-			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD"})
+			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD  Ctrl+M: cycle model"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Enter: insert newline  Enter: submit"})
 			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows, mouse wheel  Text select: hold Shift + click/drag"})
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
-			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL, ANTHROPIC_BASE_URL"})
+			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, COGENT_MODEL, COGENT_MODELS"})
+			return m, nil
+
+		case value == "/model":
+			info := s.provider.Info()
+			s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("Current model: %s/%s", info.ProviderID, info.Model)})
+			s.appendLine(line{Type: lineInfo, Data: "Usage: /model <provider/model> (e.g. /model openai/gpt-4o)"})
+			s.appendLine(line{Type: lineInfo, Data: "Or press Ctrl+M to cycle through COGENT_MODELS"})
+			return m, nil
+
+		case strings.HasPrefix(value, "/model "):
+			arg := strings.TrimSpace(strings.TrimPrefix(value, "/model "))
+			spec := api.ParseModelSpec(arg)
+			p, err := api.NewProvider(spec)
+			if err != nil {
+				s.appendLine(line{Type: lineInfo, Data: "  model switch failed: " + err.Error()})
+			} else {
+				s.provider = p
+				s.agent.SetProvider(p)
+				s.contextUsed = 0
+				s.appendLine(line{Type: lineModelChange, Data: spec.String()})
+			}
 			return m, nil
 
 		case value == "/tasks" || value == "/linear" || value == "/lin":
@@ -1246,7 +1308,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 
 	case tuiUsageMsg:
 		s.contextUsed = inner.usage.ContextUsed()
-		cost := m.client.CostForUsage(inner.usage)
+		cost := s.provider.CostForUsage(inner.usage)
 		s.totalCost += cost
 		cmds = append(cmds, m.waitForMsg())
 
@@ -1434,7 +1496,15 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 // conversation history, display lines, and metadata.
 // If quiet is true, the "↩ session resumed" info line is suppressed.
 func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
-	s := newSession(m.nextID, m.client, m.cwd, m.msgCh)
+	// Restore the model/provider from persisted session, or fall back to default.
+	provider := m.defaultProvider
+	if data.Model != "" {
+		spec := api.ParseModelSpec(data.Model)
+		if p, err := api.NewProvider(spec); err == nil {
+			provider = p
+		}
+	}
+	s := newSession(m.nextID, provider, m.cwd, m.msgCh)
 	m.nextID++
 	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
@@ -1558,7 +1628,7 @@ func (m tuiModel) View() tea.View {
 	// Overlay HUD on the viewport output (hidden while a modal is open)
 	viewportContent := s.output.View()
 	if m.hudMode == hudOverlay && !hasModal(s) {
-		hudLines := s.renderHUD(m.client, m.cwd)
+		hudLines := s.renderHUD(m.cwd)
 		if len(hudLines) > 0 {
 			viewportContent = overlayHUD(viewportContent, hudLines, m.width)
 		}
@@ -1601,7 +1671,7 @@ func (m tuiModel) View() tea.View {
 	}
 
 	// Build status bar content
-	statusContent := s.renderStatusBar(m.client, m.cwd)
+	statusContent := s.renderStatusBar(m.cwd)
 
 	// Build tab bar content (merged border + label/bottom rows)
 	mergedBorder, tabRows := m.renderTabBar(innerWidth)

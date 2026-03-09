@@ -11,18 +11,24 @@ Cogent runs in your terminal and can read, edit, and create files, execute shell
 
 ## Setup
 
-Requires an Anthropic API key.
+Requires at least one provider API key.
 
 ```sh
-export ANTHROPIC_API_KEY="sk-ant-..."
+export ANTHROPIC_API_KEY="sk-ant-..."   # and/or
+export OPENAI_API_KEY="sk-..."          # and/or
+export GEMINI_API_KEY="..."             # and/or
+export OPENROUTER_API_KEY="sk-or-..."
 make install    # → /usr/local/bin/cogent
 ```
 
-Or store it persistently in `~/.cogent/settings`:
+Or store keys persistently in `~/.cogent/settings` (global) or `.cogent/settings` (project-local):
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
+COGENT_MODEL=openrouter/anthropic/claude-sonnet-4
 ```
+
+Project-local settings override global settings. Explicit environment variables always take precedence over both.
 
 ## Usage
 
@@ -53,7 +59,7 @@ cogent agent --prompt "fix the test"      # headless, auto-approves everything
 | `grep` | Search file contents with regex |
 | `ls` | List files and directories |
 | `dispatch` | Delegate a subtask to a sub-agent running in a separate context |
-| `web_search` | Search the web for up-to-date information (Anthropic server-side tool) |
+| `web_search` | Search the web for up-to-date information (Anthropic only — server-side tool) |
 
 Destructive tools (`bash`, `write`, `edit`, `dispatch`) require confirmation before executing. `write` and `edit` show a diff preview at the confirmation prompt.
 
@@ -136,6 +142,7 @@ Variables are loaded before tool discovery, so `@env required` checks will see t
 | **Shift+←/→** | Switch tabs |
 | **Alt+1..9** | Jump to tab by number |
 | **Tab** | Focus tab bar (←/→ to navigate, Enter to select, Esc to return) |
+| **Ctrl+M** | Cycle through configured models (see `COGENT_MODELS`) |
 | **Ctrl+H** | Cycle HUD mode (status bar → overlay → off; persists across sessions) |
 | **PgUp / PgDn** | Scroll output |
 | **↑ / ↓** | Scroll output (while agent is running) |
@@ -162,12 +169,12 @@ The input area auto-grows as you type (up to 10 lines).
 The status bar at the bottom of the TUI shows:
 
 ```
- mod claude-opus-4-6  |  ctx 24k/200k  |  usd $0.45  |  pwd ~/Projects/foo  |  git main* +12/-3
+ mod openai/gpt-4o  |  ctx 24k/128k  |  usd $0.45  |  pwd ~/Projects/foo  |  git main* +12/-3
 ```
 
 | Field | Description |
 |-------|-------------|
-| **mod** | Active Anthropic model |
+| **mod** | Active provider and model (e.g. `anthropic/claude-opus-4-6`, `openai/gpt-4o`) |
 | **ctx** | Context window usage: tokens used / model max |
 | **usd** | Cumulative cost for the session |
 | **pwd** | Working directory (shortened) |
@@ -195,18 +202,63 @@ Sessions are automatically saved to `.cogent/sessions/` on completion and when t
 
 Use `/resume` to list saved sessions that aren't currently open, and `/resume <number>` or `/resume <name>` to restore one as a new tab.
 
+## Multi-Provider Support
+
+Cogent supports multiple LLM providers. Each session can use a different model, and you can switch models mid-session with **Ctrl+M** or the `/model` command.
+
+Models use `provider/model` syntax:
+
+| Provider | Example | API Key |
+|----------|---------|---------|
+| **Anthropic** | `anthropic/claude-opus-4-6` | `ANTHROPIC_API_KEY` |
+| **OpenAI** | `openai/gpt-4o` | `OPENAI_API_KEY` |
+| **Gemini** | `gemini/gemini-2.5-pro` | `GEMINI_API_KEY` |
+| **OpenRouter** | `openrouter/anthropic/claude-sonnet-4` | `OPENROUTER_API_KEY` |
+
+Bare model names are inferred automatically: `gpt-4o` → `openai/gpt-4o`, `gemini-2.5-pro` → `gemini/gemini-2.5-pro`, `claude-sonnet-4` → `anthropic/claude-sonnet-4`.
+
+### Context Management
+
+- **Anthropic** uses server-side compaction (automatic).
+- **OpenAI, Gemini, OpenRouter** use client-side hybrid compaction: LLM-generated summary of older messages with a sliding-window fallback.
+
+### Provider-Specific Features
+
+Features like extended thinking and web search are gated per provider. For example, `web_search` is only available with Anthropic, and extended thinking maps to each provider's reasoning mode when supported.
+
 ## Configuration
 
-Settings can be stored in `~/.cogent/settings` (one `KEY=VALUE` per line). Explicit environment variables always take precedence.
+Settings can be stored in `~/.cogent/settings` (global) or `.cogent/settings` (project-local), one `KEY=VALUE` per line. Project-local settings override global. Explicit environment variables always take precedence over both.
+
+### Model Selection
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | **(required)** Anthropic API key |
-| `ANTHROPIC_MODEL` | Model (default: `claude-opus-4-6`) |
-| `ANTHROPIC_BASE_URL` | Custom API base URL |
+| `COGENT_MODEL` | Default model for new sessions (default: `anthropic/claude-opus-4-6`) |
+| `COGENT_PLAN_MODEL` | Model for planning mode (falls back to `COGENT_MODEL`) |
+| `COGENT_SUBAGENT_MODEL` | Model for sub-agents (falls back to `COGENT_MODEL`) |
+| `COGENT_MODELS` | Comma-separated list for **Ctrl+M** cycling (e.g. `anthropic/claude-sonnet-4,openai/gpt-4o,openrouter/deepseek/deepseek-r1`) |
+
+### Provider API Keys
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `GEMINI_API_KEY` | Google Gemini API key |
+| `OPENROUTER_API_KEY` | OpenRouter API key |
+
+### Provider-Specific
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_MODEL` | Anthropic model override (fallback for `COGENT_MODEL`) |
+| `ANTHROPIC_BASE_URL` | Custom Anthropic API base URL (must be HTTPS) |
+| `OPENAI_BASE_URL` | Custom OpenAI API base URL |
+| `OPENROUTER_BASE_URL` | Custom OpenRouter API base URL |
 
 ## Security
 
-- `ANTHROPIC_API_KEY` is scrubbed from the environment of all subprocesses.
+- API keys are scrubbed from the environment of all subprocesses.
 - `write` and `edit` are sandboxed to the current working directory.
 - `ANTHROPIC_BASE_URL` must use HTTPS unless the host is localhost.

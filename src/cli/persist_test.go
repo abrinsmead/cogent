@@ -105,6 +105,7 @@ func TestRenderLineRoundTrip(t *testing.T) {
 		{Type: lineModeChange, Data: "Confirm"},
 		{Type: lineModeChange, Data: "YOLO"},
 		{Type: lineModeChange, Data: "Terminal"},
+		{Type: lineModelChange, Data: "openai/gpt-4o"},
 		{Type: lineConfirmPrompt, Data: "\x00bash\x00ls -la"},
 		{Type: lineConfirmPrompt, Data: "(sub-agent) \x00edit\x00file.go"},
 		{Type: lineConfirmAllow},

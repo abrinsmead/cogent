@@ -247,10 +247,11 @@ func (s ToolInputSchema) MarshalJSON() ([]byte, error) {
 }
 
 type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
-	Default     any      `json:"default,omitempty"`
+	Type        string    `json:"type"`
+	Description string    `json:"description,omitempty"`
+	Enum        []string  `json:"enum,omitempty"`
+	Default     any       `json:"default,omitempty"`
+	Items       *Property `json:"items,omitempty"`
 }
 
 type CacheControl struct {

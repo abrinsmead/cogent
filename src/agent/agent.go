@@ -67,7 +67,7 @@ const (
 )
 
 type Agent struct {
-	client       *api.Client
+	provider     api.Provider
 	registry     *tools.Registry
 	messages     []api.Message
 	system       string
@@ -80,6 +80,8 @@ type Agent struct {
 	onConfirm    func(name string, input map[string]any) ConfirmResult
 	onUsage      func(api.Usage)
 	onCompaction func() // called when server-side compaction occurs
+
+	lastContextUsed int // last known context usage from provider response
 }
 
 type Option func(*Agent)
@@ -122,7 +124,7 @@ func WithRegistry(r *tools.Registry) Option {
 	return func(a *Agent) { a.registry = r }
 }
 
-func New(client *api.Client, cwd string, opts ...Option) *Agent {
+func New(provider api.Provider, cwd string, opts ...Option) *Agent {
 	system := fmt.Sprintf(systemPrompt, envDescription(), cwd)
 	if guide := shellGuidance(); guide != "" {
 		system += "\n" + guide
@@ -136,7 +138,7 @@ func New(client *api.Client, cwd string, opts ...Option) *Agent {
 		system += "\n\n" + tools.CustomToolsPrompt
 	}
 	a := &Agent{
-		client:       client,
+		provider:     provider,
 		registry:     registry,
 		system:       system,
 		allowedTools: make(map[string]bool),
@@ -241,9 +243,12 @@ func (a *Agent) loop(ctx context.Context) error {
 			system += planPrompt
 		}
 
-		// Enable extended thinking in plan mode for deeper reasoning.
+		info := a.provider.Info()
+
+		// Enable extended thinking in plan mode for deeper reasoning
+		// (only if provider supports it).
 		var thinking *api.ThinkingConfig
-		if isPlan {
+		if isPlan && info.SupportsThinking {
 			thinking = &api.ThinkingConfig{
 				Type:         "enabled",
 				BudgetTokens: 10000,
@@ -251,12 +256,35 @@ func (a *Agent) loop(ctx context.Context) error {
 		}
 
 		tools := a.registry.Definitions()
-		tools = append(tools, api.ServerTool{Type: "web_search_20250305", Name: "web_search"})
-		resp, err := a.client.SendMessageCtx(ctx, system, a.messages, tools, thinking)
+		// Only add server tools when the provider supports them.
+		if info.SupportsServerTools {
+			tools = append(tools, api.ServerTool{Type: "web_search_20250305", Name: "web_search"})
+		}
+
+		// Client-side compaction for providers without server-side compaction.
+		if a.provider.NeedsClientCompaction() {
+			threshold := info.ContextWindow * 80 / 100
+			if a.contextUsed() > threshold {
+				compacted, err := a.provider.Compact(ctx, system, a.messages, info.ContextWindow/2)
+				if err == nil {
+					a.messages = compacted
+					a.onCompaction()
+				}
+			}
+		}
+
+		resp, err := a.provider.SendMessage(ctx, api.ProviderRequest{
+			System:    system,
+			Messages:  a.messages,
+			Tools:     tools,
+			Thinking:  thinking,
+			MaxTokens: 16384,
+		})
 		if err != nil {
 			return fmt.Errorf("api call: %w", err)
 		}
 		a.onUsage(resp.Usage)
+		a.lastContextUsed = resp.Usage.ContextUsed()
 		a.messages = append(a.messages, api.Message{
 			Role:    api.RoleAssistant,
 			Content: resp.Content,
@@ -539,6 +567,15 @@ func (a *Agent) PlanReady() bool {
 
 func (a *Agent) SetPermissionMode(m PermissionMode) { a.permMode.Store(int32(m)) }
 func (a *Agent) GetPermissionMode() PermissionMode  { return PermissionMode(a.permMode.Load()) }
+
+// SetProvider swaps the provider on the agent (for mid-session model switching).
+func (a *Agent) SetProvider(p api.Provider) { a.provider = p; a.lastContextUsed = 0 }
+
+// GetProvider returns the current provider.
+func (a *Agent) GetProvider() api.Provider { return a.provider }
+
+// contextUsed returns the estimated context token usage.
+func (a *Agent) contextUsed() int { return a.lastContextUsed }
 
 // Registry returns the agent's tool registry for external tool registration.
 func (a *Agent) Registry() *tools.Registry { return a.registry }

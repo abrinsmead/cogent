@@ -18,9 +18,9 @@ import (
 // Interactive runs an interactive REPL without a TUI framework.
 // It reads from stdin, prints to stdout, and handles confirmations inline.
 type Interactive struct {
-	client *api.Client
-	cwd    string
-	prompt string // initial prompt (optional)
+	provider api.Provider
+	cwd      string
+	prompt   string // initial prompt (optional)
 
 	ag          *agent.Agent
 	persistID   string
@@ -34,9 +34,9 @@ type Interactive struct {
 	stdinCh chan string
 }
 
-func NewInteractive(client *api.Client, cwd, prompt string) *Interactive {
+func NewInteractive(provider api.Provider, cwd, prompt string) *Interactive {
 	return &Interactive{
-		client:    client,
+		provider:  provider,
 		cwd:       cwd,
 		prompt:    prompt,
 		persistID: generatePersistID(),
@@ -62,7 +62,7 @@ func (it *Interactive) Run() error {
 	confirmReqCh := make(chan confirmRequest)
 	confirmReplyCh := make(chan agent.ConfirmResult)
 
-	it.ag = agent.New(it.client, it.cwd,
+	it.ag = agent.New(it.provider, it.cwd,
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("\n%s\n", text)
 		}),
@@ -102,7 +102,7 @@ func (it *Interactive) Run() error {
 		}),
 		agent.WithUsageCallback(func(usage api.Usage) {
 			it.contextUsed = usage.InputTokens
-			it.totalCost += it.client.CostForUsage(usage)
+			it.totalCost += it.provider.CostForUsage(usage)
 		}),
 		agent.WithCompactionCallback(func() {
 			fmt.Printf("%s  ⚡ context compacted%s\n", Dim, Reset)
@@ -258,14 +258,34 @@ func (it *Interactive) handleCommand(input string) (handled bool, quit bool) {
 		return true, false
 
 	case input == "/help":
-		fmt.Printf("%sCommands: /help /clear /quit /mode /resume /cost%s\n", Dim, Reset)
+		fmt.Printf("%sCommands: /help /clear /quit /mode /model /resume /cost%s\n", Dim, Reset)
 		fmt.Printf("%s/mode cycles: Plan → Confirm → YOLO → Terminal%s\n", Dim, Reset)
 		return true, false
 
 	case input == "/cost":
-		model := it.client.Model()
-		fmt.Printf("%sModel: %s  Context: %d  Cost: $%.4f%s\n",
-			Dim, model, it.contextUsed, it.totalCost, Reset)
+		info := it.provider.Info()
+		fmt.Printf("%sModel: %s/%s  Context: %d  Cost: $%.4f%s\n",
+			Dim, info.ProviderID, info.Model, it.contextUsed, it.totalCost, Reset)
+		return true, false
+
+	case strings.HasPrefix(input, "/model"):
+		arg := strings.TrimSpace(strings.TrimPrefix(input, "/model"))
+		if arg == "" {
+			info := it.provider.Info()
+			fmt.Printf("%sCurrent model: %s/%s%s\n", Dim, info.ProviderID, info.Model, Reset)
+			fmt.Printf("%sUsage: /model <provider/model> (e.g. /model openai/gpt-4o)%s\n", Dim, Reset)
+			return true, false
+		}
+		spec := api.ParseModelSpec(arg)
+		p, err := api.NewProvider(spec)
+		if err != nil {
+			fmt.Printf("%sError: %s%s\n", Yellow, err, Reset)
+			return true, false
+		}
+		it.provider = p
+		it.ag.SetProvider(p)
+		it.contextUsed = 0
+		fmt.Printf("%s  model → %s/%s%s\n", Dim, spec.Provider, spec.Model, Reset)
 		return true, false
 
 	case input == "/resume":
@@ -322,6 +342,15 @@ func (it *Interactive) handleResume(arg string) {
 		return
 	}
 
+	// Restore model/provider if saved
+	if sd.Model != "" {
+		spec := api.ParseModelSpec(sd.Model)
+		if p, err := api.NewProvider(spec); err == nil {
+			it.provider = p
+			it.ag.SetProvider(p)
+		}
+	}
+
 	it.ag.SetMessages(sd.Messages)
 	at := make(map[string]bool)
 	for _, name := range sd.AllowedTools {
@@ -357,10 +386,12 @@ func (it *Interactive) save() {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return
 	}
+	info := it.provider.Info()
 	data := sessionData{
 		ID:             it.persistID,
 		Name:           it.sessionName,
 		NameSet:        it.nameSet,
+		Model:          info.ProviderID + "/" + info.Model,
 		Messages:       it.ag.Messages(),
 		PermissionMode: it.ag.GetPermissionMode().String(),
 		AllowedTools:   mapKeys(it.ag.AllowedTools()),

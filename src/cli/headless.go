@@ -11,17 +11,17 @@ import (
 // Headless runs a single prompt with no interactive confirmation — every tool
 // invocation is automatically approved. Designed for CI, pipes, and scripts.
 type Headless struct {
-	client *api.Client
-	cwd    string
-	prompt string
+	provider api.Provider
+	cwd      string
+	prompt   string
 }
 
-func NewHeadless(client *api.Client, cwd, prompt string) *Headless {
-	return &Headless{client: client, cwd: cwd, prompt: prompt}
+func NewHeadless(provider api.Provider, cwd, prompt string) *Headless {
+	return &Headless{provider: provider, cwd: cwd, prompt: prompt}
 }
 
 func (h *Headless) Run() error {
-	ag := agent.New(h.client, h.cwd,
+	ag := agent.New(h.provider, h.cwd,
 		agent.WithPermissionMode(agent.ModeYOLO),
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("%s%s%s\n\n", Dim, text, Reset)
