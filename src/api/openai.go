@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -34,7 +35,7 @@ var knownOpenAIModels = map[string]openaiModelInfo{
 
 var defaultOpenAIModelInfo = openaiModelInfo{ContextWindow: 128000, InputPrice: 2.50, OutputPrice: 10}
 
-// OpenAIProvider implements the Provider interface for OpenAI's Chat Completions API.
+// OpenAIProvider implements the Provider interface for OpenAI's Responses API.
 type OpenAIProvider struct {
 	apiKey     string
 	baseURL    string
@@ -93,76 +94,82 @@ func (p *OpenAIProvider) Compact(ctx context.Context, system string, messages []
 	return compactMessages(ctx, p, system, messages, budget)
 }
 
-// ── OpenAI wire format types ────────────────────────────────────────────────
+// ── OpenAI Responses API wire format types ───────────────────────────────────
 
-type oaiRequest struct {
-	Model              string       `json:"model"`
-	Messages           []oaiMessage `json:"messages"`
-	Tools              []oaiTool    `json:"tools,omitempty"`
-	MaxCompletionToks  int          `json:"max_completion_tokens,omitempty"`
-	Temperature        *float64     `json:"temperature,omitempty"`
+type oaiResponseRequest struct {
+	Model       string              `json:"model"`
+	Instructions string             `json:"instructions,omitempty"`
+	Input       []oaiInputItem      `json:"input,omitempty"`
+	Tools       []oaiResponseTool   `json:"tools,omitempty"`
+	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+	Reasoning   *oaiReasoning       `json:"reasoning,omitempty"`
 }
 
-type oaiMessage struct {
-	Role       string        `json:"role"`
-	Content    any           `json:"content"`               // string or null
-	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string        `json:"tool_call_id,omitempty"` // for role:"tool"
+type oaiReasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
-type oaiToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"` // "function"
-	Function oaiToolFunction `json:"function"`
+type oaiInputItem struct {
+	Type     string                 `json:"type,omitempty"`
+	Role     string                 `json:"role,omitempty"`
+	Content  []oaiContentPart       `json:"content,omitempty"`
+	CallID   string                 `json:"call_id,omitempty"`
+	Name     string                 `json:"name,omitempty"`
+	Arguments string                `json:"arguments,omitempty"`
+	Output   string                 `json:"output,omitempty"`
 }
 
-type oaiToolFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON string
+type oaiContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 }
 
-type oaiTool struct {
-	Type     string          `json:"type"` // "function"
-	Function oaiToolFuncDef  `json:"function"`
-}
-
-type oaiToolFuncDef struct {
+type oaiResponseTool struct {
+	Type        string         `json:"type"`
 	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-type oaiResponse struct {
-	Choices []oaiChoice `json:"choices"`
-	Usage   oaiUsage    `json:"usage"`
+type oaiResponsesAPIResponse struct {
+	Output []oaiOutputItem `json:"output"`
+	Usage  oaiResponsesUsage `json:"usage"`
 }
 
-type oaiChoice struct {
-	Message      oaiMessage `json:"message"`
-	FinishReason string     `json:"finish_reason"`
+type oaiOutputItem struct {
+	Type      string           `json:"type"`
+	ID        string           `json:"id,omitempty"`
+	Role      string           `json:"role,omitempty"`
+	Content   []oaiContentPart `json:"content,omitempty"`
+	CallID    string           `json:"call_id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Arguments string           `json:"arguments,omitempty"`
+	Status    string           `json:"status,omitempty"`
 }
 
-type oaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+type oaiResponsesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
-
-// ── Translation ─────────────────────────────────────────────────────────────
 
 func (p *OpenAIProvider) SendMessage(ctx context.Context, req ProviderRequest) (*Response, error) {
-	oaiMsgs := p.translateMessages(req.System, req.Messages)
-	oaiTools := p.translateTools(req.Tools)
+	input := p.translateMessages(req.Messages)
+	tools := p.translateTools(req.Tools)
 
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 16384
 	}
 
-	oaiReq := oaiRequest{
-		Model:             p.model,
-		Messages:          oaiMsgs,
-		Tools:             oaiTools,
-		MaxCompletionToks: maxTokens,
+	oaiReq := oaiResponseRequest{
+		Model:           p.model,
+		Instructions:    req.System,
+		Input:           input,
+		Tools:           tools,
+		MaxOutputTokens: maxTokens,
+	}
+	if req.Thinking != nil && p.modelInfo().IsReasoning {
+		oaiReq.Reasoning = &oaiReasoning{Effort: "medium"}
 	}
 
 	body, err := json.Marshal(oaiReq)
@@ -174,7 +181,7 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req ProviderRequest) (
 	backoff := 2 * time.Second
 
 	for attempt := range maxRetries {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/responses", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
@@ -205,7 +212,7 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req ProviderRequest) (
 			return nil, fmt.Errorf("OpenAI API error (%d): %s", resp.StatusCode, string(respBody))
 		}
 
-		var oaiResp oaiResponse
+		var oaiResp oaiResponsesAPIResponse
 		if err := json.Unmarshal(respBody, &oaiResp); err != nil {
 			return nil, fmt.Errorf("unmarshal response: %w", err)
 		}
@@ -215,145 +222,117 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req ProviderRequest) (
 	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
 }
 
-func (p *OpenAIProvider) translateMessages(system string, messages []Message) []oaiMessage {
-	var result []oaiMessage
-
-	if system != "" {
-		result = append(result, oaiMessage{Role: "system", Content: system})
-	}
+func (p *OpenAIProvider) translateMessages(messages []Message) []oaiInputItem {
+	var result []oaiInputItem
 
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleUser:
-			// Check if this is a tool_result message
 			var toolResults []ContentBlock
-			var textBlocks []ContentBlock
+			var text strings.Builder
 			for _, block := range msg.Content {
 				if block.Type == "tool_result" {
 					toolResults = append(toolResults, block)
-				} else {
-					textBlocks = append(textBlocks, block)
+					continue
+				}
+				if block.Type == "text" && block.Text != "" {
+					text.WriteString(block.Text)
 				}
 			}
 
-			// Emit tool result messages first (each as separate role:"tool" message)
+			if text.Len() > 0 {
+				result = append(result, oaiInputItem{
+					Role: "user",
+					Content: []oaiContentPart{{Type: "input_text", Text: text.String()}},
+				})
+			}
+
 			for _, tr := range toolResults {
 				content := tr.Content
 				if tr.IsError {
 					content = "Error: " + content
 				}
-				result = append(result, oaiMessage{
-					Role:       "tool",
-					Content:    content,
-					ToolCallID: tr.ToolUseID,
+				result = append(result, oaiInputItem{
+					Type:   "function_call_output",
+					CallID: tr.ToolUseID,
+					Output: content,
 				})
 			}
 
-			// Emit remaining text content
-			if len(textBlocks) > 0 {
-				var text string
-				for _, b := range textBlocks {
-					if b.Type == "text" && b.Text != "" {
-						text += b.Text
-					}
-				}
-				if text != "" {
-					result = append(result, oaiMessage{Role: "user", Content: text})
-				}
-			}
-
 		case RoleAssistant:
-			var content string
-			var toolCalls []oaiToolCall
+			var text strings.Builder
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "text":
-					content += block.Text
+					if block.Text != "" {
+						text.WriteString(block.Text)
+					}
 				case "tool_use":
 					args, _ := json.Marshal(block.Input)
-					toolCalls = append(toolCalls, oaiToolCall{
-						ID:   block.ID,
-						Type: "function",
-						Function: oaiToolFunction{
-							Name:      block.Name,
-							Arguments: string(args),
-						},
+					result = append(result, oaiInputItem{
+						Type:      "function_call",
+						CallID:    block.ID,
+						Name:      block.Name,
+						Arguments: string(args),
 					})
-				// thinking, compaction, server_tool_use, web_search_tool_result — skip
 				}
 			}
-			msg := oaiMessage{Role: "assistant"}
-			if content != "" {
-				msg.Content = content
+			if text.Len() > 0 {
+				result = append(result, oaiInputItem{
+					Role: "assistant",
+					Content: []oaiContentPart{{Type: "output_text", Text: text.String()}},
+				})
 			}
-			if len(toolCalls) > 0 {
-				msg.ToolCalls = toolCalls
-			}
-			result = append(result, msg)
 		}
 	}
 
 	return result
 }
 
-func (p *OpenAIProvider) translateTools(tools []any) []oaiTool {
-	var result []oaiTool
+func (p *OpenAIProvider) translateTools(tools []any) []oaiResponseTool {
+	var result []oaiResponseTool
 	for _, t := range tools {
 		switch td := t.(type) {
 		case ToolDef:
-			result = append(result, oaiTool{
-				Type: "function",
-				Function: oaiToolFuncDef{
-					Name:        td.Name,
-					Description: td.Description,
-					Parameters:  translateToolParams(td),
-				},
+			result = append(result, oaiResponseTool{
+				Type:        "function",
+				Name:        td.Name,
+				Description: td.Description,
+				Parameters:  translateToolParams(td),
 			})
-		// ServerTool — skip (not supported on OpenAI)
 		}
 	}
 	return result
 }
 
-func (p *OpenAIProvider) translateResponse(resp oaiResponse) *Response {
-	if len(resp.Choices) == 0 {
-		return &Response{
-			Usage: Usage{
-				InputTokens:  resp.Usage.PromptTokens,
-				OutputTokens: resp.Usage.CompletionTokens,
-			},
-		}
-	}
-
-	choice := resp.Choices[0]
+func (p *OpenAIProvider) translateResponse(resp oaiResponsesAPIResponse) *Response {
 	var content []ContentBlock
-
-	if text, ok := choice.Message.Content.(string); ok && text != "" {
-		content = append(content, TextBlock(text))
-	}
-
-	for _, tc := range choice.Message.ToolCalls {
-		var input map[string]any
-		json.Unmarshal([]byte(tc.Function.Arguments), &input)
-		if input == nil {
-			input = make(map[string]any)
-		}
-		content = append(content, ContentBlock{
-			Type:  "tool_use",
-			ID:    tc.ID,
-			Name:  tc.Function.Name,
-			Input: input,
-		})
-	}
-
 	var stopReason StopReason
-	switch choice.FinishReason {
-	case "tool_calls":
-		stopReason = StopToolUse
-	case "length":
-		stopReason = StopMaxTokens
-	default:
-		stopReason = "" // end_turn equivalent
+
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, part := range item.Content {
+				if (part.Type == "output_text" || part.Type == "text") && part.Text != "" {
+					content = append(content, TextBlock(part.Text))
+				}
+			}
+		case "function_call":
+			var input map[string]any
+			json.Unmarshal([]byte(item.Arguments), &input)
+			if input == nil {
+				input = make(map[string]any)
+			}
+			content = append(content, ContentBlock{
+				Type:  "tool_use",
+				ID:    item.CallID,
+				Name:  item.Name,
+				Input: input,
+			})
+			stopReason = StopToolUse
+		case "reasoning":
+			// ignore opaque reasoning summaries for now
+		}
 	}
 
 	return &Response{
@@ -361,8 +340,8 @@ func (p *OpenAIProvider) translateResponse(resp oaiResponse) *Response {
 		Content:    content,
 		StopReason: stopReason,
 		Usage: Usage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
 		},
 	}
 }
