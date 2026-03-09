@@ -26,6 +26,7 @@ const (
 	lineShellError     lineType = "shell_err"  // shell non-zero exit (red, indented)
 	lineInfo           lineType = "info"       // system info messages (dim)
 	lineModeChange     lineType = "mode"       // mode switch: Data = mode name
+	lineModelChange    lineType = "model"      // model switch: Data = model spec string
 	lineDiff           lineType = "diff"       // confirmation diff preview: Data = "name\x00json_input"
 	lineConfirmPrompt  lineType = "confirm"    // "Allow X? [Y/n/a]": Data = "prefix\x00name\x00summary"
 	lineConfirmAllow   lineType = "allow"      // "✓ allowed"
@@ -94,6 +95,9 @@ func renderLine(l line) string {
 			style = tuiModeConfirm
 		}
 		return tuiDim.Render("  mode → ") + style.Render(l.Data)
+
+	case lineModelChange:
+		return tuiDim.Render("  model → ") + mdStyleText.Render(l.Data)
 
 	case lineDiff:
 		name, jsonInput, _ := strings.Cut(l.Data, "\x00")

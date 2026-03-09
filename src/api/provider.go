@@ -174,3 +174,33 @@ func AvailableModels() []ModelSpec {
 
 	return models
 }
+
+// translateProperty converts a Property to a JSON-schema-style map.
+func translateProperty(prop Property) map[string]any {
+	p := map[string]any{"type": prop.Type}
+	if prop.Description != "" {
+		p["description"] = prop.Description
+	}
+	if len(prop.Enum) > 0 {
+		p["enum"] = prop.Enum
+	}
+	if prop.Items != nil {
+		p["items"] = translateProperty(*prop.Items)
+	}
+	return p
+}
+
+// translateToolParams converts a ToolDef's InputSchema into a JSON-schema-style
+// parameters map suitable for OpenAI, Gemini, and OpenRouter function calling APIs.
+func translateToolParams(td ToolDef) map[string]any {
+	params := map[string]any{"type": td.InputSchema.Type}
+	props := make(map[string]any)
+	for name, prop := range td.InputSchema.Properties {
+		props[name] = translateProperty(prop)
+	}
+	params["properties"] = props
+	if len(td.InputSchema.Required) > 0 {
+		params["required"] = td.InputSchema.Required
+	}
+	return params
+}

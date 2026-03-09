@@ -776,6 +776,11 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Cycle through configured models (COGENT_MODELS)
 		if s.state == tuiStateInput || s.state == tuiStateRunning {
 			models := api.ConfiguredModels()
+			if len(models) <= 1 {
+				info := s.provider.Info()
+				s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("Current model: %s/%s  (set COGENT_MODELS to enable cycling, or use /model)", info.ProviderID, info.Model)})
+				return m, nil
+			}
 			if len(models) > 1 {
 				// Find current model in the list and advance to next
 				currentInfo := s.provider.Info()
@@ -792,7 +797,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					s.provider = p
 					s.agent.SetProvider(p)
 					s.contextUsed = 0
-					s.appendLine(line{Type: lineModeChange, Data: "model → " + nextSpec.String()})
+					s.appendLine(line{Type: lineModelChange, Data: nextSpec.String()})
 				} else {
 					s.appendLine(line{Type: lineInfo, Data: "  model switch failed: " + err.Error()})
 				}
@@ -912,7 +917,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case value == "/help":
-			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /sessions /resume /tasks /linear (/lin)"})
+			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /model /sessions /resume /tasks /linear (/lin)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD  Ctrl+M: cycle model"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
@@ -922,6 +927,27 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
 			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, COGENT_MODEL, COGENT_MODELS"})
+			return m, nil
+
+		case value == "/model":
+			info := s.provider.Info()
+			s.appendLine(line{Type: lineInfo, Data: fmt.Sprintf("Current model: %s/%s", info.ProviderID, info.Model)})
+			s.appendLine(line{Type: lineInfo, Data: "Usage: /model <provider/model> (e.g. /model openai/gpt-4o)"})
+			s.appendLine(line{Type: lineInfo, Data: "Or press Ctrl+M to cycle through COGENT_MODELS"})
+			return m, nil
+
+		case strings.HasPrefix(value, "/model "):
+			arg := strings.TrimSpace(strings.TrimPrefix(value, "/model "))
+			spec := api.ParseModelSpec(arg)
+			p, err := api.NewProvider(spec)
+			if err != nil {
+				s.appendLine(line{Type: lineInfo, Data: "  model switch failed: " + err.Error()})
+			} else {
+				s.provider = p
+				s.agent.SetProvider(p)
+				s.contextUsed = 0
+				s.appendLine(line{Type: lineModelChange, Data: spec.String()})
+			}
 			return m, nil
 
 		case value == "/tasks" || value == "/linear" || value == "/lin":

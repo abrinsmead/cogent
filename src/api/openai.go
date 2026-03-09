@@ -96,11 +96,11 @@ func (p *OpenAIProvider) Compact(ctx context.Context, system string, messages []
 // ── OpenAI wire format types ────────────────────────────────────────────────
 
 type oaiRequest struct {
-	Model       string       `json:"model"`
-	Messages    []oaiMessage `json:"messages"`
-	Tools       []oaiTool    `json:"tools,omitempty"`
-	MaxTokens   int          `json:"max_tokens,omitempty"`
-	Temperature *float64     `json:"temperature,omitempty"`
+	Model              string       `json:"model"`
+	Messages           []oaiMessage `json:"messages"`
+	Tools              []oaiTool    `json:"tools,omitempty"`
+	MaxCompletionToks  int          `json:"max_completion_tokens,omitempty"`
+	Temperature        *float64     `json:"temperature,omitempty"`
 }
 
 type oaiMessage struct {
@@ -159,10 +159,10 @@ func (p *OpenAIProvider) SendMessage(ctx context.Context, req ProviderRequest) (
 	}
 
 	oaiReq := oaiRequest{
-		Model:     p.model,
-		Messages:  oaiMsgs,
-		Tools:     oaiTools,
-		MaxTokens: maxTokens,
+		Model:             p.model,
+		Messages:          oaiMsgs,
+		Tools:             oaiTools,
+		MaxCompletionToks: maxTokens,
 	}
 
 	body, err := json.Marshal(oaiReq)
@@ -301,30 +301,12 @@ func (p *OpenAIProvider) translateTools(tools []any) []oaiTool {
 	for _, t := range tools {
 		switch td := t.(type) {
 		case ToolDef:
-			params := map[string]any{"type": td.InputSchema.Type}
-			if len(td.InputSchema.Properties) > 0 {
-				props := make(map[string]any)
-				for name, prop := range td.InputSchema.Properties {
-					p := map[string]any{"type": prop.Type}
-					if prop.Description != "" {
-						p["description"] = prop.Description
-					}
-					if len(prop.Enum) > 0 {
-						p["enum"] = prop.Enum
-					}
-					props[name] = p
-				}
-				params["properties"] = props
-			}
-			if len(td.InputSchema.Required) > 0 {
-				params["required"] = td.InputSchema.Required
-			}
 			result = append(result, oaiTool{
 				Type: "function",
 				Function: oaiToolFuncDef{
 					Name:        td.Name,
 					Description: td.Description,
-					Parameters:  params,
+					Parameters:  translateToolParams(td),
 				},
 			})
 		// ServerTool — skip (not supported on OpenAI)
