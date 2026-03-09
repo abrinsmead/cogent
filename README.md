@@ -21,7 +21,7 @@ export OPENROUTER_API_KEY="sk-or-..."
 make install    # → /usr/local/bin/cogent
 ```
 
-Or store keys persistently in `~/.cogent/settings` (global) or `.cogent/settings` (project-local):
+Or store keys persistently in `~/.cogent/settings` (global) or `.cogent/settings` (project-local, discovered by walking up from the current directory):
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -38,6 +38,8 @@ cogent tui --prompt "explain this"        # TUI with initial prompt
 cogent repl                               # interactive REPL (no full-screen UI)
 cogent agent --prompt "fix the test"      # headless, auto-approves everything
 ```
+
+`--prompt` is available on all three commands and sends an initial prompt immediately on startup.
 
 | Mode | Command | Description |
 |------|---------|-------------|
@@ -128,7 +130,13 @@ LINEAR_USERNAME=jane.doe
 
 Variables are loaded before tool discovery, so `@env required` checks will see them. Explicit environment variables take precedence — `.env` only sets values that aren't already defined.
 
+### REPL
+
+The REPL provides an interactive non-full-screen interface with inline confirmations and session persistence. Supported commands are `/help`, `/clear`, `/quit`, `/mode`, `/model`, `/resume`, and `/cost`.
+
 ### TUI
+
+The TUI auto-restores previously open tabs from `.cogent/sessions/`, supports a persistent HUD mode (`Ctrl+H`), and includes a task browser for Linear when `LINEAR_API_KEY` is configured.
 
 #### Keyboard Shortcuts
 
@@ -157,9 +165,10 @@ The input area auto-grows as you type (up to 10 lines).
 |---------|-------------|
 | `/help` | Show help |
 | `/clear` | Clear conversation history |
+| `/model [provider/model]` | Show or switch the current model |
 | `/rename <name>` | Rename the current session tab |
-| `/sessions` | List all sessions |
-| `/resume [name]` | Resume a saved session (by number or name) |
+| `/sessions` | List all open sessions |
+| `/resume [number\|name]` | Resume a saved session that is not currently open |
 | `/close` | Close the current session |
 | `/tasks` | Browse tasks (also `/linear`, `/lin`) |
 | `/quit` | Exit (also `/exit`, `/q`) |
@@ -198,9 +207,12 @@ monorepo/
 
 ### Session Persistence
 
-Sessions are automatically saved to `.cogent/sessions/` on completion and when tabs are closed. Open tabs are restored on next launch, so you can pick up where you left off.
+Sessions are saved to `.cogent/sessions/` and restored differently by UI mode:
 
-Use `/resume` to list saved sessions that aren't currently open, and `/resume <number>` or `/resume <name>` to restore one as a new tab.
+- **TUI**: open tabs are auto-restored on next launch. Closing a tab keeps the session on disk so it can be reopened with `/resume`. Closing the last tab deletes that session file.
+- **REPL**: the current session is saved on prompt completion, on `/quit`, and on EOF; `/resume` restores a saved session into the current REPL.
+
+In the TUI, use `/resume` to list saved sessions that aren't currently open, and `/resume <number>` or `/resume <name>` to restore one as a new tab.
 
 ## Multi-Provider Support
 
@@ -221,14 +233,15 @@ Bare model names are inferred automatically: `gpt-4o` → `openai/gpt-4o`, `gemi
 
 - **Anthropic** uses server-side compaction (automatic).
 - **OpenAI, Gemini, OpenRouter** use client-side hybrid compaction: LLM-generated summary of older messages with a sliding-window fallback.
+- **OpenAI** uses the Responses API (`/v1/responses`) rather than Chat Completions.
 
 ### Provider-Specific Features
 
-Features like extended thinking and web search are gated per provider. For example, `web_search` is only available with Anthropic, and extended thinking maps to each provider's reasoning mode when supported.
+Features like extended thinking and web search are gated per provider. For example, `web_search` is only available with Anthropic, OpenAI reasoning maps to the Responses API `reasoning` mode for supported models, and Gemini thinking maps to Gemini's provider-specific thinking config when supported.
 
 ## Configuration
 
-Settings can be stored in `~/.cogent/settings` (global) or `.cogent/settings` (project-local), one `KEY=VALUE` per line. Project-local settings override global. Explicit environment variables always take precedence over both.
+Settings can be stored in `~/.cogent/settings` (global) or the nearest `.cogent/settings` found by walking up from the current directory, one `KEY=VALUE` per line. Project-local settings override global. Explicit environment variables always take precedence over both.
 
 ### Model Selection
 
@@ -255,7 +268,10 @@ Settings can be stored in `~/.cogent/settings` (global) or `.cogent/settings` (p
 | `ANTHROPIC_MODEL` | Anthropic model override (fallback for `COGENT_MODEL`) |
 | `ANTHROPIC_BASE_URL` | Custom Anthropic API base URL (must be HTTPS) |
 | `OPENAI_BASE_URL` | Custom OpenAI API base URL |
+| `OPENAI_MODEL` | OpenAI model override (fallback for `COGENT_MODEL`) |
+| `GEMINI_MODEL` | Gemini model override (fallback for `COGENT_MODEL`) |
 | `OPENROUTER_BASE_URL` | Custom OpenRouter API base URL |
+| `OPENROUTER_MODEL` | OpenRouter model override (fallback for `COGENT_MODEL`) |
 
 ## Security
 

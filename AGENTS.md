@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Cogent is a lightweight terminal-based coding agent powered by the Anthropic API, written in Go. It provides two UI modes (TUI and headless) and a set of built-in tools for file manipulation, shell access, and sub-agent delegation.
+Cogent is a lightweight terminal-based coding agent with multi-provider support (Anthropic, OpenAI, Gemini, OpenRouter), written in Go. It provides three UI modes (TUI, REPL, and headless) and a set of built-in tools for file manipulation, shell access, and sub-agent delegation.
 
 ## Repository Structure
 
@@ -59,17 +59,18 @@ make install  # → /usr/local/bin/cogent
 make clean
 ```
 
-Requires Go 1.24+ and `ANTHROPIC_API_KEY` set (via environment or `~/.cogent/settings`).
+Requires Go 1.24+ and at least one provider API key set (via environment, `~/.cogent/settings`, or project `.cogent/settings`).
 
 ## Architecture
 
 ### Global Settings (`config/config.go`)
 
-- `config.Load()` reads `~/.cogent/settings` at startup, before the API client is created.
-- Uses `KEY=VALUE` format (same as `.env` — `#` comments, optional quoting).
+- `config.Load()` reads settings at startup before the API client is created.
+- Settings use `KEY=VALUE` format (same as `.env` — `#` comments, optional quoting).
+- Project settings are loaded from the first `.cogent/settings` found by walking **up** from cwd; global settings come from `~/.cogent/settings`.
 - Only sets keys not already in the environment — explicit env vars always win.
-- Intended for global credentials (`ANTHROPIC_API_KEY`, `LINEAR_API_KEY`, `LINEAR_USERNAME`, etc.).
-- **Precedence** (highest to lowest): explicit env vars → `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
+- Intended for credentials and model selection (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `COGENT_MODEL`, etc.).
+- **Precedence** (highest to lowest): explicit env vars → nearest project `.cogent/settings` → global `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
 
 ### Agent Loop (`agent/agent.go`)
 
@@ -120,6 +121,14 @@ Four modes cycle via Shift+Tab: Plan → Confirm → YOLO → Terminal.
 - Context compaction configured via `context_management` field (type `compact_20260112`) — triggers at 80% of context window (min 50k tokens). Beta header `Anthropic-Beta: compact-2026-01-12` sent with every request.
 - System prompt sent as a content block array; `cache_control: ephemeral` is set on the top-level request.
 - `max_tokens` set to 16384 (automatically increased when extended thinking is enabled).
+
+### API Providers (`api/*.go`)
+
+- Anthropic uses `/v1/messages` with server-side compaction and optional server tools.
+- OpenAI uses the Responses API (`/v1/responses`) with `instructions`, `input`, and `function_call` / `function_call_output` items.
+- Gemini uses the Generative Language API with provider-specific thinking config.
+- OpenRouter uses an OpenAI-compatible chat-completions API.
+- Providers expose pricing/capability metadata through `ModelInfo`, and implement client-side compaction where server-side compaction is unavailable.
 
 ### Deterministic JSON Serialization (`api/types.go`)
 
@@ -197,11 +206,12 @@ Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed dir
     - Alt+1..9: jump to tab by number
     - Shift+Tab: cycle permission mode
     - Ctrl+H: cycle HUD mode
+    - Ctrl+M: cycle configured models (`COGENT_MODELS`)
     - Ctrl+C: interrupt agent (running) / quit (idle)
     - PgUp/PgDn: scroll viewport page, ↑/↓: scroll 3 lines (when not in input)
     - y/n/a/Enter: allow / deny / always-allow tool during confirmation
 
-  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/sessions`, `/linear` (also `/lin`).
+  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/model`, `/sessions`, `/resume`, `/tasks` (also `/linear`, `/lin`).
 
   - **Sub-agent confirmations**: routed to the parent session's tab, prefixed with "(sub-agent)". Sub-agents run as tab-less goroutines — they don't get their own tabs.
 
