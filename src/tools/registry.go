@@ -121,3 +121,22 @@ func (r *Registry) CustomToolNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// CustomToolEntry describes a loaded custom tool for display purposes.
+type CustomToolEntry struct {
+	Name    string
+	Confirm bool
+}
+
+// CustomToolInfo returns the names and confirmation status of successfully loaded custom tools, sorted by name.
+func (r *Registry) CustomToolInfo() []CustomToolEntry {
+	entries := make([]CustomToolEntry, 0, len(r.customNames))
+	for _, name := range r.customNames {
+		t := r.tools[name]
+		entries = append(entries, CustomToolEntry{Name: name, Confirm: t.RequiresConfirmation()})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+	return entries
+}

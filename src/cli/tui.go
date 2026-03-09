@@ -1536,8 +1536,8 @@ func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 		s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
 	}
 	// Show active custom tools on rehydration
-	if names := s.agent.Registry().CustomToolNames(); len(names) > 0 {
-		s.appendLine(line{Type: lineToolsLoaded, Data: strings.Join(names, ", ")})
+	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
+		s.appendLine(line{Type: lineToolsLoaded, Data: formatToolEntries(entries)})
 	}
 
 	// Save with updated tab order (now has a tab)

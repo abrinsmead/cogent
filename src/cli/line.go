@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/anthropics/agent/agent"
+	"github.com/anthropics/agent/tools"
 )
 
 // lineType identifies the semantic kind of a viewport line for persistence.
@@ -34,7 +35,7 @@ const (
 	lineConfirmDenyInt lineType = "deny_int"   // "✗ denied (interrupted)"
 	lineConfirmAlways  lineType = "always"     // "✓ always allow X": Data = tool name
 	lineCompaction     lineType = "compact"    // "⚡ context compacted"
-	lineToolsLoaded    lineType = "tools"      // active custom tools: Data = "name1, name2, ..."
+	lineToolsLoaded    lineType = "tools"      // active custom tools: Data = "name1, name2, ..." (prefix \x01 = confirm)
 	linePlanConfirm    lineType = "planconf"   // "Switch to Confirm mode and execute? [Y/n]"
 	lineError          lineType = "error"      // agent/shell error (yellow)
 	lineChoice         lineType = "choice"     // clarifying question: Data = "question\x00opt1\x00opt2\x00..."
@@ -138,9 +139,13 @@ func renderLine(l line) string {
 		names := strings.Split(l.Data, ", ")
 		var styled []string
 		for _, name := range names {
-			styled = append(styled, tuiGreen.Render(name))
+			if strings.HasPrefix(name, "\x01") {
+				styled = append(styled, tuiRed.Render(name[1:]))
+			} else {
+				styled = append(styled, tuiGreen.Render(name))
+			}
 		}
-		return tuiDim.Render("  tools ") + strings.Join(styled, tuiDim.Render(", "))
+		return tuiDim.Render("  custom tools ") + strings.Join(styled, tuiDim.Render(", "))
 
 	case linePlanConfirm:
 		return tuiYellow.Render("Switch to Confirm mode and execute? [Y/n] ")
@@ -530,4 +535,18 @@ func applyInlineStyles(s string) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// formatToolEntries encodes custom tool entries for lineToolsLoaded Data.
+// Tools requiring confirmation are prefixed with \x01.
+func formatToolEntries(entries []tools.CustomToolEntry) string {
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		if e.Confirm {
+			parts[i] = "\x01" + e.Name
+		} else {
+			parts[i] = e.Name
+		}
+	}
+	return strings.Join(parts, ", ")
 }
