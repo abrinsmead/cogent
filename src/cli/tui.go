@@ -1017,6 +1017,7 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	}
 	switch msg.String() {
 	case "ctrl+c":
+		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDenyInt})
 		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
@@ -1029,6 +1030,7 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "enter", "y", "Y":
+		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmAllow})
 		cm.reply <- agent.ConfirmAllow
 		s.confirm = nil
@@ -1037,6 +1039,7 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "n", "N":
+		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDeny})
 		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
@@ -1045,6 +1048,7 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "a", "A":
+		s.flushPromptLine()
 		toolName := cm.name
 		s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
 		cm.reply <- agent.ConfirmAlways
@@ -1063,6 +1067,7 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 	s := m.cur()
 
 	accept := func() (tea.Model, tea.Cmd) {
+		s.flushPromptLine()
 		s.prompt = nil
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.agent.SetPermissionMode(agent.ModeConfirm)
@@ -1079,6 +1084,7 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 	}
 
 	decline := func() (tea.Model, tea.Cmd) {
+		s.flushPromptLine()
 		s.prompt = nil
 		s.state = tuiStateInput
 		if s.id == m.cur().id {
@@ -1127,6 +1133,7 @@ func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	}
 
 	submit := func(text string) (tea.Model, tea.Cmd) {
+		s.flushPromptLine()
 		s.appendLine(line{Type: lineChoiceSelected, Data: text})
 		clarify.reply <- text
 		s.clarify = nil
@@ -1136,6 +1143,7 @@ func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	}
 
 	dismiss := func() (tea.Model, tea.Cmd) {
+		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDeny})
 		clarify.reply <- ""
 		s.clarify = nil
@@ -1326,8 +1334,9 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if inner.subAgent {
 			prefix = "(sub-agent) "
 		}
-		s.appendLine(line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary})
+		pendingLine := line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary}
 		p := newConfirmPrompt(&inner, fmt.Sprintf("%sAllow %s %s? [Y/n/a] ", prefix, inner.name, summary))
+		p.pendingLine = &pendingLine
 		s.prompt = &p
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
@@ -1335,8 +1344,9 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		s.clarify = &inner
 		s.state = tuiStatePrompt
 		p := newChoicePrompt(inner.question, inner.choices)
+		pendingLine := line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")}
+		p.pendingLine = &pendingLine
 		s.prompt = &p
-		s.appendLine(line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")})
 		cmds = append(cmds, notifyCmd(s.name+" has a question"), m.waitForMsg())
 
 	case tuiDoneMsg:
@@ -1347,8 +1357,9 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			// Planning finished with a ready signal — ask to switch to Confirm.
 			s.state = tuiStatePrompt
 			p := newPlanConfirmPrompt()
+			pendingLine := line{Type: linePlanConfirm}
+			p.pendingLine = &pendingLine
 			s.prompt = &p
-			s.appendLine(line{Type: linePlanConfirm})
 		} else {
 			s.state = tuiStateInput
 		}

@@ -37,6 +37,12 @@ type promptModel struct {
 	choices  []string // option labels (1-indexed for display)
 	selected int      // 0-based index of the currently highlighted choice
 	freeform bool     // true when the user is typing a custom response (last choice selected)
+
+	// pendingLine is a viewport history line deferred until the user responds.
+	// While the floating box is visible, appending this line immediately would
+	// cause the prompt text to appear twice (once in scrollback, once in the box).
+	// Instead it is flushed into the viewport when the user answers.
+	pendingLine *line
 }
 
 // ── Constructors ────────────────────────────────────────────────────────────
