@@ -36,6 +36,7 @@ const (
 	lineConfirmAlways  lineType = "always"     // "✓ always allow X": Data = tool name
 	lineCompaction     lineType = "compact"    // "⚡ context compacted"
 	lineToolsLoaded    lineType = "tools"      // active custom tools: Data = "name1, name2, ..." (prefix \x01 = confirm)
+	lineSessionStart   lineType = "start"     // session start/resume: Data = "new\x00timestamp" or "resumed\x00timestamp"
 	linePlanConfirm    lineType = "planconf"   // "Switch to Confirm mode and execute? [Y/n]"
 	lineError          lineType = "error"      // agent/shell error (yellow)
 	lineChoice         lineType = "choice"     // clarifying question: Data = "question\x00opt1\x00opt2\x00..."
@@ -145,7 +146,15 @@ func renderLine(l line) string {
 				styled = append(styled, tuiGreen.Render(name))
 			}
 		}
-		return tuiDim.Render("  custom tools ") + strings.Join(styled, tuiDim.Render(", "))
+		return tuiDim.Render("  custom tools: ") + strings.Join(styled, tuiDim.Render(", "))
+
+	case lineSessionStart:
+		kind, ts, _ := strings.Cut(l.Data, "\x00")
+		label := "session started"
+		if kind == "resumed" {
+			label = "session resumed"
+		}
+		return tuiDim.Render("  " + label + " " + ts)
 
 	case linePlanConfirm:
 		return tuiYellow.Render("Switch to Confirm mode and execute? [Y/n] ")

@@ -109,9 +109,13 @@ func (it *Interactive) Run() error {
 		}),
 	)
 
+	// Session start marker
+	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
+	fmt.Printf("%s  ● session started %s%s\n", Dim, ts, Reset)
+
 	// Show custom tools
 	if names := it.ag.Registry().CustomToolNames(); len(names) > 0 {
-		fmt.Printf("%s  tools %s%s\n", Dim, strings.Join(names, ", "), Reset)
+		fmt.Printf("%s  custom tools: %s%s\n", Dim, strings.Join(names, ", "), Reset)
 	}
 
 	// Print banner
@@ -375,7 +379,8 @@ func (it *Interactive) handleResume(arg string) {
 		it.ag.SetPermissionMode(agent.ModeConfirm)
 	}
 
-	fmt.Printf("%sRestored session: %s (%d messages)%s\n", Green, sd.Name, len(sd.Messages), Reset)
+	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
+	fmt.Printf("%s  ↩ session resumed %s — %s (%d messages)%s\n", Dim, ts, sd.Name, len(sd.Messages), Reset)
 }
 
 func (it *Interactive) save() {

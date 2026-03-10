@@ -279,7 +279,7 @@ func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 		m.sessions = nil
 		for i := range tabSessions {
 			sd := tabSessions[i]
-			m.resumeSession(&sd, true)
+			m.resumeSession(&sd)
 		}
 		m.active = 0
 	} else {
@@ -1483,7 +1483,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	// Resume the session
-	resumed := m.resumeSession(target, false)
+	resumed := m.resumeSession(target)
 	m.active = len(m.sessions) - 1
 	m.resizeAll()
 	m.scrollTabsToActive()
@@ -1494,8 +1494,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 
 // resumeSession creates a new tab from saved session data, restoring
 // conversation history, display lines, and metadata.
-// If quiet is true, the "↩ session resumed" info line is suppressed.
-func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
+func (m *tuiModel) resumeSession(data *sessionData) *session {
 	// Restore the model/provider from persisted session, or fall back to default.
 	provider := m.defaultProvider
 	if data.Model != "" {
@@ -1532,10 +1531,8 @@ func (m *tuiModel) resumeSession(data *sessionData, quiet bool) *session {
 	// Restore display lines
 	s.slines = data.Lines
 	s.rebuildRendered()
-	if !quiet {
-		s.appendLine(line{Type: lineInfo, Data: "  ↩ session resumed"})
-	}
-	// Show active custom tools on rehydration
+	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
+	s.appendLine(line{Type: lineSessionStart, Data: "resumed\x00" + ts})
 	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
 		s.appendLine(line{Type: lineToolsLoaded, Data: formatToolEntries(entries)})
 	}

@@ -126,8 +126,10 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 
 	s.updateModeTagWidth()
 
-	s.slines = []line{{}}
-	s.rlines = []string{""}
+	// Session start marker with timestamp
+	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
+	s.slines = []line{{Type: lineSessionStart, Data: "new\x00" + ts}}
+	s.rlines = []string{renderLine(s.slines[0])}
 
 	// Show active custom tools at startup
 	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
