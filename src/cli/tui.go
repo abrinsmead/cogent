@@ -105,10 +105,10 @@ var (
 			Italic(true)
 
 	tuiTabRunning = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("3"))
+			Foreground(lipgloss.Color("8"))
 
 	tuiTabNeedsAttention = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("1")).
+				Foreground(lipgloss.Color("3")).
 				Bold(true)
 )
 
@@ -1881,10 +1881,10 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 
 		dot := ""
 		if s.state == tuiStatePrompt {
-			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
-			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 			dot = dotStyle.Render("●") + " "
 		}
 
