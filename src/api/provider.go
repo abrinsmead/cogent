@@ -125,6 +125,20 @@ func SubagentModelSpec() ModelSpec {
 	return DefaultModelSpec()
 }
 
+// SuggestModelSpec returns the model spec for input suggestions.
+// Returns an empty ModelSpec if the feature is not configured.
+// Requires both COGENT_SUGGEST_MODEL and COGENT_SUGGEST_ENABLED=true.
+func SuggestModelSpec() ModelSpec {
+	enabled := os.Getenv("COGENT_SUGGEST_ENABLED")
+	if enabled != "true" && enabled != "1" {
+		return ModelSpec{}
+	}
+	if v := os.Getenv("COGENT_SUGGEST_MODEL"); v != "" {
+		return ParseModelSpec(v)
+	}
+	return ModelSpec{}
+}
+
 // ConfiguredModels returns the list of models configured for Ctrl+M cycling.
 // Falls back to just the default model if COGENT_MODELS is not set.
 func ConfiguredModels() []ModelSpec {

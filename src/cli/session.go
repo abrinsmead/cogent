@@ -56,6 +56,10 @@ type session struct {
 	historyIndex int      // -1 = not browsing; 0..len-1 = current position
 	historySaved string   // text that was in the input before browsing started
 
+	// Ghost-text suggestions (LLM-powered, opt-in)
+	suggestion    string           // current ghost text suggestion (empty = none)
+	suggestEngine *suggestionEngine // nil if feature is disabled
+
 	// Status bar stats (per-session)
 	contextUsed int
 	totalCost   float64
@@ -228,6 +232,15 @@ func (s *session) rebuildHistory() {
 	}
 	s.historyIndex = -1
 	s.historySaved = ""
+}
+
+// clearSuggestion removes the current ghost-text suggestion and cancels any
+// in-flight suggestion request.
+func (s *session) clearSuggestion() {
+	s.suggestion = ""
+	if s.suggestEngine != nil {
+		s.suggestEngine.cancel()
+	}
 }
 
 // autoName sets the tab name from the first user prompt, unless manually renamed.

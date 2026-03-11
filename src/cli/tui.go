@@ -198,10 +198,11 @@ const (
 const maxInputHeight = 10 // max lines the input area can grow to
 
 type tuiModel struct {
-	defaultProvider api.Provider
-	cwd             string
-	width           int
-	height          int
+	defaultProvider  api.Provider
+	suggestProvider  api.Provider // shared provider for input suggestions (nil = disabled)
+	cwd              string
+	width            int
+	height           int
 
 	sessions []*session // all open sessions
 	active   int        // index of the currently visible session
@@ -258,9 +259,18 @@ func (m *tuiModel) sessionIndexByID(id int) int {
 func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
+	// Initialize suggestion provider if configured
+	var suggestProvider api.Provider
+	if spec := api.SuggestModelSpec(); spec.Provider != "" {
+		if p, err := api.NewProvider(spec); err == nil {
+			suggestProvider = p
+		}
+	}
+
 	splash := newSplashModel()
 	m := tuiModel{
 		defaultProvider: provider,
+		suggestProvider: suggestProvider,
 		cwd:             cwd,
 		msgCh:           msgCh,
 		initialPrompt:   prompt,
@@ -303,7 +313,11 @@ func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 // wireTools sets up the dispatch and clarify tools for a session.
 // Sub-agents run as tab-less goroutines with all tools except dispatch.
 // Confirmations and clarify questions are routed to the parent session's tab.
+// Also initializes the suggestion engine if configured.
 func (m *tuiModel) wireTools(s *session) {
+	// Initialize suggestion engine if provider is available
+	s.suggestEngine = newSuggestionEngine(m.suggestProvider)
+
 	cwd := m.cwd
 	msgCh := m.msgCh
 	parentID := s.id
@@ -713,8 +727,19 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Tab key toggles focus to the tab bar
+	// Tab key: accept ghost-text suggestion, or toggle tab bar focus
 	if msg.String() == "tab" && !m.tabFocused && s.state != tuiStateTasks {
+		if s.state == tuiStateInput && s.suggestion != "" {
+			// Accept the suggestion — populate input for review
+			s.input.SetValue(s.suggestion)
+			s.input.CursorEnd()
+			s.suggestion = ""
+			if s.recalcInputHeight() {
+				m.resizeAll()
+			}
+			return m, nil
+		}
+		// No suggestion — toggle tab bar focus (original behavior)
 		m.tabFocused = true
 		s.input.Blur()
 		return m, nil
@@ -878,6 +903,9 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := m.cur()
 
+	// Clear ghost-text suggestion on any key press
+	s.clearSuggestion()
+
 	// Filter out escape sequence fragments that Bubble Tea couldn't parse.
 	// With mouse tracking enabled, partial SGR sequences (\x1b[<Cb;Cx;CyM)
 	// can arrive split across multiple KeyPressMsg messages. We use a time-based
@@ -983,12 +1011,12 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Commands: /help /clear /quit /close /rename <name> /model /sessions /resume /tasks /linear (/lin)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Tab: cycle permission mode (Plan → Confirm → YOLO → Terminal)"})
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD  Ctrl+M: cycle model"})
-			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
-			s.appendLine(line{Type: lineInfo, Data: "Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"})
+			s.appendLine(line{Type: lineInfo, Data: "Tab: accept suggestion or focus tab bar  Shift+←/→: switch tabs  Alt+1..9: jump to tab"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+Enter: insert newline  Enter: submit  ↑/↓: cycle input history"})
 			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows, mouse wheel  Text select: hold Shift + click/drag"})
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
+			s.appendLine(line{Type: lineInfo, Data: "Suggestions: set COGENT_SUGGEST_MODEL and COGENT_SUGGEST_ENABLED=true for ghost-text predictions"})
 			s.appendLine(line{Type: lineInfo, Data: "Env: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, COGENT_MODEL, COGENT_MODELS"})
 			return m, nil
 
@@ -1428,6 +1456,12 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
+		// Trigger suggestion request after successful completion
+		if s.state == tuiStateInput && s.suggestEngine != nil && inner.err == nil {
+			cmd := s.suggestEngine.requestSuggestion(
+				s.id, s.agent.Messages(), s.inputHistory, m.msgCh)
+			cmds = append(cmds, cmd)
+		}
 		cmds = append(cmds, notifyCmd(s.name+" is done"))
 		saveSession(m.cwd, s, m.tabOrderOf(s))
 
@@ -1454,6 +1488,12 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, textarea.Blink)
 		}
 		saveSession(m.cwd, s, m.tabOrderOf(s))
+
+	case tuiSuggestionMsg:
+		// Only apply if the session is still in input state and input is empty
+		if s.state == tuiStateInput && strings.TrimSpace(s.input.Value()) == "" {
+			s.suggestion = inner.suggestion
+		}
 
 	case tuiTaskFetchDoneMsg:
 		if s.taskModal != nil {
@@ -1733,7 +1773,15 @@ func (m tuiModel) View() tea.View {
 			promptContent = tuiStatus.Render(" thinking"+dots+" ") + tuiDim.Render("(ctrl+c to interrupt)")
 		}
 	default:
-		promptContent = s.input.View()
+		// Show ghost-text suggestion as placeholder when input is empty
+		if s.suggestion != "" && strings.TrimSpace(s.input.Value()) == "" {
+			origPlaceholder := s.input.Placeholder
+			s.input.Placeholder = s.suggestion + "  (tab to accept)"
+			promptContent = s.input.View()
+			s.input.Placeholder = origPlaceholder
+		} else {
+			promptContent = s.input.View()
+		}
 	}
 
 	// Build status bar content
