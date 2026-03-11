@@ -51,6 +51,11 @@ type session struct {
 	// Task browser modal
 	taskModal *taskModal
 
+	// Input history (up/down arrow cycling, like a shell)
+	inputHistory []string // previous commands, oldest first
+	historyIndex int      // -1 = not browsing; 0..len-1 = current position
+	historySaved string   // text that was in the input before browsing started
+
 	// Status bar stats (per-session)
 	contextUsed int
 	totalCost   float64
@@ -100,15 +105,16 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 	}
 
 	s := &session{
-		id:          id,
-		persistID:   generatePersistID(),
-		name:        "Default",
-		createdAt:   time.Now(),
-		provider:    provider,
-		input:       ta,
-		output:      vp,
-		state:       tuiStateInput,
-		inputHeight: 1,
+		id:           id,
+		persistID:    generatePersistID(),
+		name:         "Default",
+		createdAt:    time.Now(),
+		provider:     provider,
+		input:        ta,
+		output:       vp,
+		state:        tuiStateInput,
+		inputHeight:  1,
+		historyIndex: -1,
 	}
 	if id > 0 {
 		s.name = fmt.Sprintf("Session %d", id+1)
@@ -151,6 +157,77 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 	}
 
 	return s
+}
+
+// pushHistory adds an entry to the input history and resets browsing state.
+func (s *session) pushHistory(text string) {
+	if text == "" {
+		return
+	}
+	// Avoid consecutive duplicates
+	if len(s.inputHistory) > 0 && s.inputHistory[len(s.inputHistory)-1] == text {
+		s.historyIndex = -1
+		s.historySaved = ""
+		return
+	}
+	s.inputHistory = append(s.inputHistory, text)
+	s.historyIndex = -1
+	s.historySaved = ""
+}
+
+// historyUp moves to the previous (older) history entry.
+// Returns true if the input should be updated.
+func (s *session) historyUp() (string, bool) {
+	if len(s.inputHistory) == 0 {
+		return "", false
+	}
+	if s.historyIndex == -1 {
+		// Start browsing — save the current input
+		s.historySaved = s.input.Value()
+		s.historyIndex = len(s.inputHistory) - 1
+	} else if s.historyIndex > 0 {
+		s.historyIndex--
+	} else {
+		// Already at the oldest entry
+		return "", false
+	}
+	return s.inputHistory[s.historyIndex], true
+}
+
+// historyDown moves to the next (newer) history entry.
+// Returns true if the input should be updated.
+func (s *session) historyDown() (string, bool) {
+	if s.historyIndex == -1 {
+		return "", false
+	}
+	if s.historyIndex < len(s.inputHistory)-1 {
+		s.historyIndex++
+		return s.inputHistory[s.historyIndex], true
+	}
+	// Past the newest entry — restore the saved text
+	s.historyIndex = -1
+	saved := s.historySaved
+	s.historySaved = ""
+	return saved, true
+}
+
+// rebuildHistory reconstructs the input history from structured lines.
+// Called after restoring a session from disk.
+func (s *session) rebuildHistory() {
+	s.inputHistory = nil
+	for _, l := range s.slines {
+		if l.Type == linePrompt || l.Type == lineShellPrompt {
+			text := strings.TrimSpace(l.Data)
+			if text != "" {
+				// Avoid consecutive duplicates
+				if len(s.inputHistory) == 0 || s.inputHistory[len(s.inputHistory)-1] != text {
+					s.inputHistory = append(s.inputHistory, text)
+				}
+			}
+		}
+	}
+	s.historyIndex = -1
+	s.historySaved = ""
 }
 
 // autoName sets the tab name from the first user prompt, unless manually renamed.

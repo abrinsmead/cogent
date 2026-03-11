@@ -538,6 +538,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prompt := m.initialPrompt
 		m.initialPrompt = ""
 		s := m.cur()
+		s.pushHistory(prompt)
 		s.appendLine(line{Type: linePrompt, Data: prompt})
 		s.autoName(prompt)
 		m.setWindowTitle()
@@ -768,6 +769,16 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.updatePromptLine()
 			return m, nil
 		}
+		if s.state == tuiStateInput && s.input.Line() == 0 {
+			if text, ok := s.historyUp(); ok {
+				s.input.SetValue(text)
+				s.input.CursorEnd()
+				if s.recalcInputHeight() {
+					m.resizeAll()
+				}
+			}
+			return m, nil
+		}
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
 			s.output.ScrollUp(3)
 			s.scrollback = true
@@ -777,6 +788,16 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if s.state == tuiStatePrompt && s.prompt != nil && s.prompt.kind == promptChoice {
 			s.prompt.down()
 			s.updatePromptLine()
+			return m, nil
+		}
+		if s.state == tuiStateInput && s.input.Line() == s.input.LineCount()-1 {
+			if text, ok := s.historyDown(); ok {
+				s.input.SetValue(text)
+				s.input.CursorEnd()
+				if s.recalcInputHeight() {
+					m.resizeAll()
+				}
+			}
 			return m, nil
 		}
 		if s.state != tuiStateInput && s.state != tuiStateTasks {
@@ -904,6 +925,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if value == "" {
 			return m, nil
 		}
+		s.pushHistory(value)
 		s.input.Reset()
 		s.inputHeight = 1
 		s.input.SetHeight(1)
@@ -963,7 +985,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineInfo, Data: "Ctrl+T: new session  Ctrl+W: close session  Ctrl+H: cycle HUD  Ctrl+M: cycle model"})
 			s.appendLine(line{Type: lineInfo, Data: "Tab: focus tab bar (←/→ to switch, enter to select, esc to return)"})
 			s.appendLine(line{Type: lineInfo, Data: "Shift+←/→: switch tabs  Alt+1..9: jump to tab by number"})
-			s.appendLine(line{Type: lineInfo, Data: "Shift+Enter: insert newline  Enter: submit"})
+			s.appendLine(line{Type: lineInfo, Data: "Shift+Enter: insert newline  Enter: submit  ↑/↓: cycle input history"})
 			s.appendLine(line{Type: lineInfo, Data: "Scroll: PgUp/PgDn, ↑/↓ arrows, mouse wheel  Text select: hold Shift + click/drag"})
 			s.appendLine(line{Type: lineInfo, Data: "Confirmations: y=allow, n=deny, a=always allow this tool for session"})
 			s.appendLine(line{Type: lineInfo, Data: "Terminal mode: input runs as shell commands"})
@@ -1021,6 +1043,9 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.ensureTabSpinnerTick())
 
 	default:
+		// Any other key resets history browsing
+		s.historyIndex = -1
+		s.historySaved = ""
 		var cmd tea.Cmd
 		s.input, cmd = s.input.Update(msg)
 		if s.recalcInputHeight() {
@@ -1579,9 +1604,10 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 		s.input.Placeholder = inputPlaceholder(agent.ModeTerminal)
 	}
 
-	// Restore display lines
+	// Restore display lines and input history
 	s.slines = data.Lines
 	s.rebuildRendered()
+	s.rebuildHistory()
 	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
 	s.appendLine(line{Type: lineSessionStart, Data: "resumed\x00" + ts})
 	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
