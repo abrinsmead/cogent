@@ -389,7 +389,7 @@ func (m tuiModel) waitForMsg() tea.Cmd {
 }
 
 func dotTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
 		return dotTickMsg{}
 	})
 }
@@ -1865,7 +1865,7 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
-			const spinnerFrames = "⠄⠂⠆⠖"
+			const spinnerFrames = "◐◓◑◒"
 			frames := []rune(spinnerFrames)
 			frame := frames[m.dotFrame%len(frames)]
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
@@ -2031,7 +2031,7 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 	case m.tabFocused:
 		hint = "  (←/→ enter to select tab)"
 	default:
-		hint = "  (shift ←/→ select tab)"
+		hint = "  (shift ←/→ to change tab)"
 	}
 	midRowWidth := lipgloss.Width(midRow)
 	remaining := boxWidth + 2 - midRowWidth // +2 for outer box edges
