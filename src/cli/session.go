@@ -163,16 +163,6 @@ func (s *session) appendLine(l line) {
 	s.refreshContent()
 }
 
-// flushPromptLine appends the deferred prompt line (if any) to the viewport.
-// Called when the user responds to a prompt so the question appears in
-// scrollback history right before the allow/deny/choice result.
-func (s *session) flushPromptLine() {
-	if s.prompt != nil && s.prompt.pendingLine != nil {
-		s.appendLine(*s.prompt.pendingLine)
-		s.prompt.pendingLine = nil
-	}
-}
-
 // updatePromptLine re-renders the last line in the viewport. Used when the
 // user navigates choices in a promptChoice so the highlighting updates live.
 func (s *session) updatePromptLine() {

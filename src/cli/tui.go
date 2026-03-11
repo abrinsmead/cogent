@@ -1017,7 +1017,6 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	}
 	switch msg.String() {
 	case "ctrl+c":
-		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDenyInt})
 		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
@@ -1030,7 +1029,6 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "enter", "y", "Y":
-		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmAllow})
 		cm.reply <- agent.ConfirmAllow
 		s.confirm = nil
@@ -1039,7 +1037,6 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "n", "N":
-		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDeny})
 		cm.reply <- agent.ConfirmDeny
 		s.confirm = nil
@@ -1048,7 +1045,6 @@ func (m *tuiModel) handlePromptConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, m.waitForMsg()
 
 	case "a", "A":
-		s.flushPromptLine()
 		toolName := cm.name
 		s.appendLine(line{Type: lineConfirmAlways, Data: toolName})
 		cm.reply <- agent.ConfirmAlways
@@ -1067,7 +1063,6 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 	s := m.cur()
 
 	accept := func() (tea.Model, tea.Cmd) {
-		s.flushPromptLine()
 		s.prompt = nil
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.agent.SetPermissionMode(agent.ModeConfirm)
@@ -1084,7 +1079,6 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 	}
 
 	decline := func() (tea.Model, tea.Cmd) {
-		s.flushPromptLine()
 		s.prompt = nil
 		s.state = tuiStateInput
 		if s.id == m.cur().id {
@@ -1133,7 +1127,6 @@ func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	}
 
 	submit := func(text string) (tea.Model, tea.Cmd) {
-		s.flushPromptLine()
 		s.appendLine(line{Type: lineChoiceSelected, Data: text})
 		clarify.reply <- text
 		s.clarify = nil
@@ -1143,7 +1136,6 @@ func (m *tuiModel) handlePromptChoice(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	}
 
 	dismiss := func() (tea.Model, tea.Cmd) {
-		s.flushPromptLine()
 		s.appendLine(line{Type: lineConfirmDeny})
 		clarify.reply <- ""
 		s.clarify = nil
@@ -1334,18 +1326,16 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if inner.subAgent {
 			prefix = "(sub-agent) "
 		}
-		pendingLine := line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary}
+		s.appendLine(line{Type: lineConfirmPrompt, Data: prefix + "\x00" + inner.name + "\x00" + summary})
 		p := newConfirmPrompt(&inner, fmt.Sprintf("%sAllow %s %s? [Y/n/a] ", prefix, inner.name, summary))
-		p.pendingLine = &pendingLine
 		s.prompt = &p
 		cmds = append(cmds, notifyCmd(s.name+" needs confirmation"), m.waitForMsg())
 
 	case tuiClarifyMsg:
 		s.clarify = &inner
 		s.state = tuiStatePrompt
+		s.appendLine(line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")})
 		p := newChoicePrompt(inner.question, inner.choices)
-		pendingLine := line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")}
-		p.pendingLine = &pendingLine
 		s.prompt = &p
 		cmds = append(cmds, notifyCmd(s.name+" has a question"), m.waitForMsg())
 
@@ -1356,9 +1346,8 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		} else if s.agent.GetPermissionMode() == agent.ModePlan && s.agent.PlanReady() {
 			// Planning finished with a ready signal — ask to switch to Confirm.
 			s.state = tuiStatePrompt
+			s.appendLine(line{Type: linePlanConfirm})
 			p := newPlanConfirmPrompt()
-			pendingLine := line{Type: linePlanConfirm}
-			p.pendingLine = &pendingLine
 			s.prompt = &p
 		} else {
 			s.state = tuiStateInput
@@ -1642,14 +1631,6 @@ func (m tuiModel) View() tea.View {
 		}
 	}
 
-	// Overlay floating confirmation/choice box at the bottom of the viewport,
-	// full width (matching the input bar) and anchored just above it.
-	if s.state == tuiStatePrompt && s.prompt != nil && !s.prompt.freeform {
-		boxMaxWidth := innerWidth + 2 // match the input bar outer width (border included)
-		box := s.prompt.renderFloatingBox(boxMaxWidth)
-		vpHeight := s.output.Height()
-		viewportContent = overlayBottomLeft(viewportContent, box, m.width, vpHeight)
-	}
 	b.WriteString(viewportContent)
 	b.WriteString("\n")
 
