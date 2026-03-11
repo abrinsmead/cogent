@@ -45,7 +45,8 @@ type session struct {
 	inputHeight  int
 	modeTagWidth int // visual width of " Mode " prefix in prompt box
 	scrollback   bool
-	pastedText   string // stored paste content when input shows collapsed label
+	pastedText  string // stored paste content when input shows collapsed label
+	pasteLabel  string // the "[Pasted N lines]" label inserted into the input
 
 	// Task browser modal
 	taskModal *taskModal
