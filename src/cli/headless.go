@@ -26,7 +26,7 @@ func (h *Headless) Run() error {
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("%s%s%s\n\n", Dim, text, Reset)
 		}),
-		agent.WithToolCallback(func(name, summary string) {
+		agent.WithToolCallback(func(name, summary string, _ map[string]any) {
 			color := Green
 			switch name {
 			case "bash", "write", "edit":

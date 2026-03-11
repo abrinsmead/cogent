@@ -75,7 +75,7 @@ type Agent struct {
 	allowedTools map[string]bool // tools the user has "always allowed" for this session
 	onText       func(string)
 	onThinking   func(string) // called with extended thinking content
-	onTool       func(string, string)
+	onTool       func(string, string, map[string]any)
 	onToolResult func(name string, result string, isError bool)
 	onConfirm    func(name string, input map[string]any) ConfirmResult
 	onUsage      func(api.Usage)
@@ -94,7 +94,7 @@ func WithThinkingCallback(fn func(string)) Option {
 	return func(a *Agent) { a.onThinking = fn }
 }
 
-func WithToolCallback(fn func(string, string)) Option {
+func WithToolCallback(fn func(string, string, map[string]any)) Option {
 	return func(a *Agent) { a.onTool = fn }
 }
 
@@ -144,7 +144,7 @@ func New(provider api.Provider, cwd string, opts ...Option) *Agent {
 		allowedTools: make(map[string]bool),
 		onText:       func(s string) {},
 		onThinking:   func(s string) {},
-		onTool:       func(n, s string) {},
+		onTool:       func(n, s string, _ map[string]any) {},
 		onToolResult: func(name, result string, isError bool) {},
 		onConfirm:    func(name string, input map[string]any) ConfirmResult { return ConfirmAllow },
 		onUsage:      func(u api.Usage) {},
@@ -321,7 +321,7 @@ func (a *Agent) loop(ctx context.Context) error {
 				toolBlocks = append(toolBlocks, block)
 			case "server_tool_use":
 				if q, ok := block.Input["query"].(string); ok {
-					a.onTool("web_search", q)
+					a.onTool("web_search", q, block.Input)
 				}
 			case "web_search_tool_result":
 				a.onToolResult("web_search", fmt.Sprintf("%d results", len(block.SearchContent)), false)
@@ -394,7 +394,7 @@ func (a *Agent) executeTools(blocks []api.ContentBlock) ([]api.ContentBlock, boo
 		confirmed[i].tool = tool
 
 		summary := summarizeInput(block.Name, block.Input)
-		a.onTool(block.Name, summary)
+		a.onTool(block.Name, summary, block.Input)
 
 		// Handle confirmation
 		if errMsg, wasDenied := a.confirmTool(tool, block); wasDenied {

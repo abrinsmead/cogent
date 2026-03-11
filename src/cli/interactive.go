@@ -66,7 +66,7 @@ func (it *Interactive) Run() error {
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("\n%s\n", text)
 		}),
-		agent.WithToolCallback(func(name, summary string) {
+		agent.WithToolCallback(func(name, summary string, _ map[string]any) {
 			color := Green
 			switch name {
 			case "bash", "write", "edit":
