@@ -302,6 +302,9 @@ func (s *session) inputVisualLines() int {
 }
 
 // sendToAgent starts an agent call in a goroutine and returns the tea.Cmd.
+// The done message is sent through msgCh (not returned directly) to guarantee
+// FIFO ordering with all other callback messages (text, tool, confirm, etc.)
+// that are also sent through the channel during SendCtx.
 func (s *session) sendToAgent(prompt string, msgCh chan tea.Msg) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelFn = cancel
@@ -309,13 +312,17 @@ func (s *session) sendToAgent(prompt string, msgCh chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		err := s.agent.SendCtx(ctx, prompt)
 		if err != nil && ctx.Err() != nil {
-			return sessionMsg{sessionID: id, inner: tuiDoneMsg{err: nil}}
+			msgCh <- sessionMsg{sessionID: id, inner: tuiDoneMsg{err: nil}}
+		} else {
+			msgCh <- sessionMsg{sessionID: id, inner: tuiDoneMsg{err: err}}
 		}
-		return sessionMsg{sessionID: id, inner: tuiDoneMsg{err: err}}
+		return nil
 	}
 }
 
 // runShellCommand executes a shell command and sends output via msgCh.
+// Like sendToAgent, the done message is routed through msgCh to preserve
+// ordering with the shell output lines sent during execution.
 func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.Cmd {
 	id := s.id
 	return func() tea.Msg {
@@ -342,11 +349,14 @@ func (s *session) runShellCommand(command, cwd string, msgCh chan tea.Msg) tea.C
 					fullOutput += "\n"
 				}
 				fullOutput += exitMsg
-				return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: fullOutput}}
+				msgCh <- sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: fullOutput}}
+				return nil
 			}
-			return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: err, command: command, output: output}}
+			msgCh <- sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: err, command: command, output: output}}
+			return nil
 		}
-		return sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: output}}
+		msgCh <- sessionMsg{sessionID: id, inner: tuiShellDoneMsg{err: nil, command: command, output: output}}
+		return nil
 	}
 }
 
