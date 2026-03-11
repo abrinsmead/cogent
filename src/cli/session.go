@@ -29,16 +29,16 @@ type session struct {
 	nameSet   bool // true if user explicitly renamed via /rename
 	createdAt time.Time
 
-	provider api.Provider    // per-session provider (each session can use a different model)
+	provider api.Provider // per-session provider (each session can use a different model)
 	agent    *agent.Agent
 	output   viewport.Model
 	input    textarea.Model
-	slines  []line   // structured lines (persisted)
-	rlines  []string // rendered lines (for viewport display)
-	state   tuiState
-	confirm *tuiConfirmMsg  // active tool confirmation (reply channel for agent)
-	clarify *tuiClarifyMsg  // active clarifying question (reply channel for agent)
-	prompt  *promptModel    // active user prompt (confirm, plan confirm, or choice)
+	slines   []line   // structured lines (persisted)
+	rlines   []string // rendered lines (for viewport display)
+	state    tuiState
+	confirm  *tuiConfirmMsg // active tool confirmation (reply channel for agent)
+	clarify  *tuiClarifyMsg // active clarifying question (reply channel for agent)
+	prompt   *promptModel   // active user prompt (confirm, plan confirm, or choice)
 
 	cancelFn     context.CancelFunc
 	inputHeight  int
@@ -54,12 +54,20 @@ type session struct {
 	totalCost   float64
 }
 
+// inputPlaceholder returns the textarea placeholder text for the given permission mode.
+func inputPlaceholder(mode agent.PermissionMode) string {
+	if mode == agent.ModeTerminal {
+		return "Run a command or press shift+tab to change permission modes"
+	}
+	return "Ask a question or press shift+tab to change permission modes"
+}
+
 // newSession creates a session with its own agent, textarea, and viewport.
 // The unified msgCh is shared across all sessions — callbacks tag messages
 // with the session ID via sessionMsg.
 func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
-	ta.Placeholder = "Ask a question or press Shift+Tab to change modes"
+	ta.Placeholder = inputPlaceholder(agent.ModeConfirm)
 	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
 		if info.LineNumber == 0 {
 			return "❯ "

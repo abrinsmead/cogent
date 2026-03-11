@@ -789,7 +789,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 					return "  "
 				})
-				s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
+				s.input.Placeholder = inputPlaceholder(agent.ModeTerminal)
 			} else {
 				s.input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
 					if info.LineNumber == 0 {
@@ -797,7 +797,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					}
 					return "  "
 				})
-				s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
+				s.input.Placeholder = inputPlaceholder(newMode)
 			}
 			s.appendLine(line{Type: lineModeChange, Data: newMode.String()})
 			s.updateModeTagWidth()
@@ -1099,7 +1099,7 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 		s.appendLine(line{Type: lineConfirmAllow})
 		s.agent.SetPermissionMode(agent.ModeConfirm)
 		s.input.Prompt = "❯ "
-		s.input.Placeholder = "Ask a question or press Shift+Tab to change modes"
+		s.input.Placeholder = inputPlaceholder(agent.ModeConfirm)
 		s.appendLine(line{Type: lineModeChange, Data: agent.ModeConfirm.String()})
 		s.state = tuiStateRunning
 		s.input.Blur()
@@ -1558,7 +1558,7 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 	// Restore input prompt style for terminal mode
 	if s.agent.GetPermissionMode() == agent.ModeTerminal {
 		s.input.Prompt = "$ "
-		s.input.Placeholder = "Run a command or press Shift+Tab to change modes"
+		s.input.Placeholder = inputPlaceholder(agent.ModeTerminal)
 	}
 
 	// Restore display lines
