@@ -401,7 +401,7 @@ func dotTick() tea.Cmd {
 }
 
 func tabSpinnerTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg {
 		return tabSpinnerTickMsg{}
 	})
 }
@@ -1916,11 +1916,11 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
-			const spinnerFrames = "◐◓◑◒"
-			frames := []rune(spinnerFrames)
-			frame := frames[m.tabSpinnerFrame%len(frames)]
-			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-			dot = dotStyle.Render(string(frame)) + " "
+			// Pulsing magenta dot: cycles bright → dim → bright.
+			pulseColors := []string{"201", "165", "129", "93", "129", "165"}
+			c := pulseColors[m.tabSpinnerFrame%len(pulseColors)]
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(c))
+			dot = dotStyle.Render("●") + " "
 		}
 
 		// Width measures content between │ borders: " " + dot + style(" label ") + " "
