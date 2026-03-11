@@ -25,8 +25,13 @@ Rules:
 - Do not add quotes, prefixes, or explanations
 - Keep predictions concise and actionable (1-2 sentences typically)
 - Predict follow-up instructions, bug fixes, refinements, or next steps
-- If unsure, predict a short, general follow-up like "looks good, now..." or a relevant next step
-- Consider the user's input history for patterns in how they phrase requests`
+- Consider the user's input history for patterns in how they phrase requests
+- If there is no clear or obvious next step — respond with exactly NONE
+  Examples of when to respond NONE:
+  - The conversation just started and there's insufficient context
+  - The agent gave a generic or open-ended response like "anything else?"
+  - The task appears fully complete with no natural follow-up
+  - You would just be guessing with no real signal`
 
 // suggestionEngine manages background LLM calls for input suggestions.
 type suggestionEngine struct {
@@ -138,7 +143,7 @@ func (e *suggestionEngine) predict(ctx context.Context, messages []api.Message, 
 
 	// Append a user message asking for prediction
 	simplified = append(simplified, api.UserMessage(
-		"Based on the conversation above, predict the single most likely next user message. Output ONLY the predicted text."))
+		"Based on the conversation above, predict the single most likely next user message. Output ONLY the predicted text, or NONE if there is no confident prediction."))
 
 	resp, err := e.provider.SendMessage(ctx, api.ProviderRequest{
 		System:    system,
@@ -164,6 +169,11 @@ func (e *suggestionEngine) predict(ctx context.Context, messages []api.Message, 
 			(result[0] == '\'' && result[len(result)-1] == '\'') {
 			result = result[1 : len(result)-1]
 		}
+	}
+
+	// Filter out low-confidence responses
+	if strings.EqualFold(result, "none") || result == "" {
+		return ""
 	}
 
 	return result

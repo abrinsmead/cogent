@@ -128,6 +128,29 @@ func TestSuggestionEnginePredictStripsQuotes(t *testing.T) {
 	}
 }
 
+func TestSuggestionEnginePredictNoneFiltering(t *testing.T) {
+	tests := []struct {
+		response string
+		expected string
+	}{
+		{"NONE", ""},
+		{"none", ""},
+		{"None", ""},
+		{"  NONE  ", ""},
+		{"fix the bug", "fix the bug"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		mock := &mockSuggestProvider{response: tt.response}
+		engine := newSuggestionEngine(mock)
+		result := engine.predict(context.Background(), []api.Message{api.UserMessage("hello")}, nil)
+		if result != tt.expected {
+			t.Errorf("predict(%q) = %q, want %q", tt.response, result, tt.expected)
+		}
+	}
+}
+
 func TestSuggestionEngineCancel(t *testing.T) {
 	mock := &mockSuggestProvider{response: "test"}
 	engine := newSuggestionEngine(mock)
