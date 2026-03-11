@@ -110,13 +110,36 @@ type oaiReasoning struct {
 }
 
 type oaiInputItem struct {
-	Type     string                 `json:"type,omitempty"`
-	Role     string                 `json:"role,omitempty"`
-	Content  []oaiContentPart       `json:"content,omitempty"`
-	CallID   string                 `json:"call_id,omitempty"`
-	Name     string                 `json:"name,omitempty"`
-	Arguments string                `json:"arguments,omitempty"`
-	Output   string                 `json:"output,omitempty"`
+	Type      string           `json:"-"`
+	Role      string           `json:"-"`
+	Content   []oaiContentPart `json:"-"`
+	CallID    string           `json:"-"`
+	Name      string           `json:"-"`
+	Arguments string           `json:"-"`
+	Output    string           `json:"-"`
+}
+
+func (item oaiInputItem) MarshalJSON() ([]byte, error) {
+	switch item.Type {
+	case "function_call_output":
+		return json.Marshal(struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+			Output string `json:"output"`
+		}{item.Type, item.CallID, item.Output})
+	case "function_call":
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{item.Type, item.CallID, item.Name, item.Arguments})
+	default:
+		return json.Marshal(struct {
+			Role    string           `json:"role"`
+			Content []oaiContentPart `json:"content"`
+		}{item.Role, item.Content})
+	}
 }
 
 type oaiContentPart struct {
@@ -261,6 +284,7 @@ func (p *OpenAIProvider) translateMessages(messages []Message) []oaiInputItem {
 
 		case RoleAssistant:
 			var text strings.Builder
+			var funcCalls []oaiInputItem
 			for _, block := range msg.Content {
 				switch block.Type {
 				case "text":
@@ -269,7 +293,7 @@ func (p *OpenAIProvider) translateMessages(messages []Message) []oaiInputItem {
 					}
 				case "tool_use":
 					args, _ := json.Marshal(block.Input)
-					result = append(result, oaiInputItem{
+					funcCalls = append(funcCalls, oaiInputItem{
 						Type:      "function_call",
 						CallID:    block.ID,
 						Name:      block.Name,
@@ -283,6 +307,7 @@ func (p *OpenAIProvider) translateMessages(messages []Message) []oaiInputItem {
 					Content: []oaiContentPart{{Type: "output_text", Text: text.String()}},
 				})
 			}
+			result = append(result, funcCalls...)
 		}
 	}
 

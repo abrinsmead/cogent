@@ -42,6 +42,17 @@ func compactMessages(ctx context.Context, provider Provider, system string, mess
 		recentStart = 1
 	}
 
+	// Don't split tool_use/tool_result pairs: if recentStart lands on a
+	// user message containing tool_result blocks, include the preceding
+	// assistant message (which has the matching tool_use blocks).
+	if recentStart > 0 && recentStart < len(messages) &&
+		messages[recentStart].Role == RoleUser && hasToolResults(messages[recentStart]) {
+		recentStart--
+		if recentStart < 1 {
+			recentStart = 1
+		}
+	}
+
 	oldMessages := messages[:recentStart]
 	recentMessages := messages[recentStart:]
 
@@ -120,6 +131,16 @@ Conversation:
 	}
 
 	return strings.Join(texts, "\n"), nil
+}
+
+// hasToolResults checks if a message contains any tool_result content blocks.
+func hasToolResults(msg Message) bool {
+	for _, block := range msg.Content {
+		if block.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
 }
 
 // estimateMessageTokens gives a rough token estimate for a message.
