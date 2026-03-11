@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -57,9 +58,9 @@ type session struct {
 // inputPlaceholder returns the textarea placeholder text for the given permission mode.
 func inputPlaceholder(mode agent.PermissionMode) string {
 	if mode == agent.ModeTerminal {
-		return "Run a command or press shift+tab to change permission modes"
+		return "Run a command or press shift+tab to change permission mode"
 	}
-	return "Ask a question or press shift+tab to change permission modes"
+	return "Type a message or press shift+tab to change permission mode"
 }
 
 // newSession creates a session with its own agent, textarea, and viewport.
@@ -116,7 +117,11 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineText, Data: text}}}
 		}),
-		agent.WithToolCallback(func(name, summary string) {
+		agent.WithToolCallback(func(name, summary string, input map[string]any) {
+			if name == "edit" || name == "write" {
+				inputJSON, _ := json.Marshal(input)
+				msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineDiff, Data: name + "\x00" + string(inputJSON)}}}
+			}
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineTool, Data: name + "\x00" + summary}}}
 		}),
 		agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
