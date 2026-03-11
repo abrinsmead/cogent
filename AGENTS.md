@@ -1,240 +1,49 @@
 # Cogent — Agent Guidelines
 
-## Project Overview
-
-Cogent is a lightweight terminal-based coding agent with multi-provider support (Anthropic, OpenAI, Gemini, OpenRouter), written in Go. It provides three UI modes (TUI, REPL, and headless) and a set of built-in tools for file manipulation, shell access, and sub-agent delegation.
+Lightweight terminal coding agent with multi-provider support (Anthropic, OpenAI, Gemini, OpenRouter), written in Go.
 
 ## Repository Structure
 
 ```
-cogent/
-├── Makefile              # build, install, clean targets
-├── .cogent/
-│   ├── .env              # env vars for custom tools (gitignored)
-│   └── tools/            # project-local custom tool scripts
-├── src/
-│   ├── main.go           # entry point — flag parsing, mode detection
-│   ├── go.mod
-│   ├── agent/
-│   │   ├── agent.go      # core agent loop, permission modes, system prompt, AGENTS.md loading
-│   │   ├── env.go        # runtime environment detection (OS, arch, shell, distro)
-│   │   └── env_test.go   # tests for env detection
-│   ├── api/
-│   │   ├── client.go     # Anthropic HTTP client, model pricing, retry logic, context compaction
-│   │   └── types.go      # request/response types, content blocks, tool definitions, deterministic JSON
-│   ├── cli/
-│   │   ├── cli.go        # CLI interface, ANSI helpers, diff rendering
-│   │   ├── tui.go        # Bubble Tea full-screen UI (viewport, textarea, status bar, tab bar)
-│   │   ├── session.go    # per-session state (agent, viewport, input, sub-agent support)
-│   │   ├── headless.go   # single-shot, auto-approve, for CI/pipes
-│   │   ├── linear.go     # Linear ticket browser modal
-│   │   ├── modal.go      # modal overlay helpers (dim, center)
-│   │   └── splash.go     # animated startup splash screen
-│   ├── config/
-│   │   ├── config.go     # global settings loader (~/.cogent/settings)
-│   │   └── config_test.go
-│   └── tools/
-│       ├── registry.go   # tool registry with RegisterTool for post-construction additions
-│       ├── safepath.go   # path validation (sandbox writes to cwd, resolves symlinks)
-│       ├── walk.go       # directory walker (skips .git, node_modules, vendor, __pycache__, dot-dirs)
-│       ├── bash.go       # shell command execution with timeout
-│       ├── read.go       # read files with line numbers
-│       ├── write.go      # write/create files
-│       ├── edit.go       # search-and-replace (exact single match)
-│       ├── glob.go       # file pattern matching
-│       ├── grep.go       # regex search
-│       ├── ls.go         # directory listing
-│       ├── dispatch.go   # sub-agent delegation tool (concurrent)
-│       ├── custom.go     # custom tool loader, .env parser, @ directive parser
-│       ├── custom_test.go
-│       └── glob_test.go  # tests for glob tool
-└── bin/                  # build output (gitignored)
+src/
+├── main.go              # entry point — flag parsing, mode detection
+├── agent/               # core agent loop, permission modes, system prompt, env detection
+├── api/                 # provider clients (Anthropic, OpenAI, Gemini, OpenRouter), types, compaction
+├── cli/                 # TUI (Bubble Tea), REPL, headless mode, session persistence, Linear integration
+├── config/              # settings loader (~/.cogent/settings, .cogent/settings)
+└── tools/               # tool registry, built-in tools, custom tool loader, path sandboxing
 ```
 
-## Build & Run
+## Build & Test
 
 ```sh
 make build    # → bin/cogent
 make install  # → /usr/local/bin/cogent
-make clean
-```
-
-Requires Go 1.24+ and at least one provider API key set (via environment, `~/.cogent/settings`, or project `.cogent/settings`).
-
-## Architecture
-
-### Global Settings (`config/config.go`)
-
-- `config.Load()` reads settings at startup before the API client is created.
-- Settings use `KEY=VALUE` format (same as `.env` — `#` comments, optional quoting).
-- Project settings are loaded from the first `.cogent/settings` found by walking **up** from cwd; global settings come from `~/.cogent/settings`.
-- Only sets keys not already in the environment — explicit env vars always win.
-- Intended for credentials and model selection (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `COGENT_MODEL`, etc.).
-- **Precedence** (highest to lowest): explicit env vars → nearest project `.cogent/settings` → global `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
-
-### Agent Loop (`agent/agent.go`)
-
-- The agent sends messages to the API in a loop (max 50 iterations).
-- Each iteration: send conversation → process response blocks (text, thinking, compaction, or tool_use) → collect tool results → repeat if stop_reason is `tool_use`.
-- The system prompt is built once at construction: base prompt (with dynamic env description + cwd) + shell guidance + AGENTS.md contents (if found) + custom tool instructions (if `.cogent/tools/` exists).
-- `loadAgentsMD` walks **up** from cwd to filesystem root collecting all AGENTS.md files, concatenates them root-first (outermost context first).
-- Plan mode appends a read-only instruction (`planPrompt`) to the system prompt at each iteration.
-- Server-side context compaction replaces client-side history trimming — the API automatically compacts when input tokens reach 80% of the context window.
-- On `stop_reason: "compaction"`, the loop continues to let the model resume with compacted context.
-- On `stop_reason: "max_tokens"`, the loop sends a "Continue from where you left off." message.
-
-#### Tool Execution
-
-- **Two-phase execution**: Phase 1 confirms all tools sequentially. Phase 2 runs confirmed tools — tools implementing `ConcurrentTool` (e.g., dispatch) run in parallel goroutines, others run sequentially. Results collected in original order.
-- **Denial cascading**: when a user denies a tool, all subsequent tools in the same batch are skipped with an error.
-- **Always-allow**: users can press `a` during confirmation to always allow a specific tool for the rest of the session (`allowedTools` map).
-
-### Environment Detection (`agent/env.go`)
-
-- `envDescription()` generates a concise runtime description for the system prompt (e.g. "macOS (arm64, zsh)", "Linux/Alpine 3.19 (amd64, BusyBox ash)").
-- `shellGuidance()` returns extra POSIX-compatibility guidelines when the default shell is BusyBox ash, dash, or plain ash (not for other non-bash shells like zsh or fish).
-- Detects OS, architecture, Linux distro (via `/etc/os-release`), and shell (BusyBox check → `$SHELL` → probing).
-
-### Permission Modes
-
-Four modes cycle via Shift+Tab: Plan → Confirm → YOLO → Terminal.
-
-- **Plan**: extended thinking enabled, read-only tools (read/glob/grep/ls) allowed freely, bash allowed with confirmation, write/edit/dispatch blocked. The agent explores the codebase, asks clarifying questions, and presents a structured plan (default).
-- **Confirm**: destructive tools require user confirmation.
-- **YOLO**: auto-approves everything.
-- **Terminal**: user input runs as shell commands via `sh -c`; agent tools blocked. Shell I/O is injected into agent conversation history via `AppendHistory` so the agent sees what was run when switching back.
-
-### Extended Thinking
-
-- Plan mode enables extended thinking via the `thinking` API parameter (`budget_tokens: 10000`).
-- The API returns `thinking` content blocks (with opaque `signature` field required by the API) which are displayed as collapsed summaries in the TUI.
-- When thinking is enabled, `max_tokens` is set to `budget_tokens + 8192` if the default 16384 would be too small.
-- The `ThinkingConfig` type in `api/types.go` controls this; the `ContentBlock` type handles `thinking` blocks.
-
-### API Client (`api/client.go`)
-
-- Non-streaming: single POST to `/v1/messages`, parses full response. HTTP timeout: 5 minutes.
-- Retries on 429/529 with exponential backoff (3 attempts, starting at 2s, doubling each retry).
-- Model pricing table for cost tracking (per-MTok rates). Default model: `claude-opus-4-6`. Unknown models fall back to Sonnet-tier pricing (200k context, $3/$0.30/$15).
-- Cache creation charged at 1.25× input price.
-- Base URL validated: must be HTTPS or localhost. Env vars: `ANTHROPIC_API_KEY` (required), `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`.
-- Context compaction configured via `context_management` field (type `compact_20260112`) — triggers at 80% of context window (min 50k tokens). Beta header `Anthropic-Beta: compact-2026-01-12` sent with every request.
-- System prompt sent as a content block array; `cache_control: ephemeral` is set on the top-level request.
-- `max_tokens` set to 16384 (automatically increased when extended thinking is enabled).
-
-### API Providers (`api/*.go`)
-
-- Anthropic uses `/v1/messages` with server-side compaction and optional server tools.
-- OpenAI uses the Responses API (`/v1/responses`) with `instructions`, `input`, and `function_call` / `function_call_output` items.
-- Gemini uses the Generative Language API with provider-specific thinking config.
-- OpenRouter uses an OpenAI-compatible chat-completions API.
-- Providers expose pricing/capability metadata through `ModelInfo`, and implement client-side compaction where server-side compaction is unavailable.
-
-### Deterministic JSON Serialization (`api/types.go`)
-
-- `ContentBlock.MarshalJSON` and `ToolInputSchema.MarshalJSON` produce deterministic JSON output by sorting map keys.
-- Critical for Anthropic's prompt caching, which uses exact byte matching — random Go map iteration order would break cache hits between requests.
-- `orderedMap` helper serializes `map[string]any` with sorted keys.
-- `ContentBlock.MarshalJSON` handles five block types: `tool_use`, `tool_result`, `thinking`, `compaction`, and text (default).
-
-### Tools
-
-Every tool implements `tools.Tool` (Definition, Execute, RequiresConfirmation). Destructive tools (`bash`, `write`, `edit`, `dispatch`) require confirmation. `write` and `edit` are path-sandboxed to the working directory via `safepath.go` (resolves symlinks to prevent escaping).
-
-Tools implementing `ConcurrentTool` interface (`IsConcurrent() bool`) can execute in parallel when the API returns multiple tool calls. Currently only `dispatch` is concurrent.
-
-#### Built-in Tool Details
-
-| Tool | Confirmation | Key Limits |
-|---|---|---|
-| `bash` | Yes | 120s default timeout (max 600s), 30k char output, runs via `sh -c`, non-zero exit appended as text (not error) |
-| `read` | No | 2000-line default limit, lines >2000 chars truncated, 1-indexed offset |
-| `write` | Yes | Path-sandboxed, creates parent dirs (0755), writes file (0644) |
-| `edit` | Yes | Path-sandboxed, exactly 1 match required, old_string ≠ new_string, preserves file permissions |
-| `glob` | No | Max 1000 results, sorted newest-modified first, supports `**/` recursive |
-| `grep` | No | Max 500 matches, regex pattern, skips binary files (null byte in first 512 bytes) |
-| `ls` | No | Shows kind (d/-), size, name; returns "(empty)" for empty dirs |
-| `dispatch` | Yes | Concurrent, SpawnFunc injected by TUI post-construction |
-
-#### Directory Walker (`walk.go`)
-
-Skips: `.git`, `node_modules`, `vendor`, `__pycache__`, and any dot-prefixed directory (except the root itself).
-
-### Dispatch Tool (`tools/dispatch.go`)
-
-- Delegates subtasks to sub-agent sessions running in separate contexts.
-- Implements `ConcurrentTool` — multiple dispatch calls in one batch run in parallel.
-- `SpawnFunc` is injected by the TUI after session creation — the tool checks for nil at execution time.
-- Sub-agents inherit the parent's permission mode and run to completion, returning their final text output.
-- Sub-agents run as tab-less goroutines — confirmations are routed to the parent session's tab, prefixed with "(sub-agent)".
-- Not available in headless mode (dispatch tool not registered).
-- Requires confirmation by default.
-
-### Custom Tools (`tools/custom.go`)
-
-- User-defined tools are executable scripts with `@` directives in comments (`@tool`, `@description`, `@param`, `@env`, `@confirm`/`@noconfirm`).
-- Supports comment prefixes: `#`, `//`, `--` (bash, Go/JS/C, SQL/Lua).
-- Discovered from `.cogent/tools/` (project-local, takes precedence) and `~/.cogent/tools/` (global).
-- `.cogent/.env` is loaded before discovery via `LoadDotEnv` (supports single/double quote stripping) so `@env required` checks see the values. Project-local `.env` takes precedence over global; explicit env vars always win.
-- Scripts receive JSON on stdin, return output on stdout. 120s timeout, 30k char output limit.
-- `ANTHROPIC_API_KEY` is scrubbed from the subprocess environment.
-- Custom tools require confirmation by default (`@confirm`); read-only tools use `@noconfirm`.
-
-### Registry (`tools/registry.go`)
-
-- `NewRegistry(cwd)` creates registry and registers 7 built-in tools (bash, read, write, edit, glob, grep, ls). Dispatch is registered externally by the session.
-- `RegisterTool(t)` returns `false` if name already taken (no-op, no warning).
-- `Definitions()` returns all tool defs sorted alphabetically.
-- `Warnings()` returns any custom tool loading warnings.
-
-### UI Modes
-
-- **TUI** (`cli/tui.go`, `cli/session.go`): Bubble Tea with viewport + textarea. Supports multiple sessions as tabs. Async agent calls via goroutine + message channel. Animated splash screen on startup (dismissible with any key).
-
-  - **Status bar** shows: model, context used/total, total cost (USD), cwd (shortened), git branch with dirty indicator. Git branch read directly from `.git/HEAD` (no exec).
-
-  - **HUD modes** (cycle with Ctrl+H): status bar (default) → overlay (floating top-right box with color-coded context: green <50%, yellow 50–80%, red ≥80%) → off.
-
-  - **Tab bar** with colored dot indicators: yellow = running, red = needs attention (confirmation).
-
-  - **Animated prompt dots** while agent is running (cycling every 400ms): "thinking..." / "planning... (extended thinking)" / "running..." depending on mode.
-
-  - **Key bindings**:
-    - Ctrl+T: new tab, Ctrl+W: close tab
-    - Tab: focus tab bar (←/→ navigate, Enter select, Esc return)
-    - Shift+←/→: instant tab switch (without focusing tab bar)
-    - Alt+1..9: jump to tab by number
-    - Shift+Tab: cycle permission mode
-    - Ctrl+H: cycle HUD mode
-    - Ctrl+M: cycle configured models (`COGENT_MODELS`)
-    - Ctrl+C: interrupt agent (running) / quit (idle)
-    - PgUp/PgDn: scroll viewport page, ↑/↓: scroll 3 lines (when not in input)
-    - y/n/a/Enter: allow / deny / always-allow tool during confirmation
-
-  - **Commands**: `/help`, `/clear`, `/quit` (also `/exit`, `/q`), `/close`, `/rename <name>`, `/model`, `/sessions`, `/resume`, `/tasks` (also `/linear`, `/lin`).
-
-  - **Sub-agent confirmations**: routed to the parent session's tab, prefixed with "(sub-agent)". Sub-agents run as tab-less goroutines — they don't get their own tabs.
-
-  - **Desktop notifications**: OSC 9 + terminal bell on confirmation needed and session completion.
-
-  - **Mouse**: always captured (`WithMouseCellMotion`). Scroll wheel on viewport (3 lines per tick). Text selection via Shift+click/drag (standard terminal convention).
-
-  - Accepts an optional initial prompt via CLI args.
-
-- **Headless** (`cli/headless.go`): Single prompt, auto-approve, returns on completion. No dispatch tool (no sub-agent support).
-
-## Conventions
-
-- **Go style**: standard library preferred, minimal dependencies. Direct deps: Bubble Tea stack (`bubbles`, `bubbletea`, `lipgloss`, `x/ansi`), `x/term`, `rivo/uniseg`.
-- **Error handling**: tools return `(string, error)` — errors become tool_result with `is_error: true` so the agent can recover.
-- **Security**: `ANTHROPIC_API_KEY` is scrubbed from all subprocess environments (bash tool, custom tools, terminal mode). Write paths are validated against the working directory with symlink resolution.
-- **No streaming**: the API client makes synchronous requests; the TUI updates via a channel of Bubble Tea messages from callbacks.
-- **Deterministic serialization**: all JSON output from `ContentBlock` and `ToolInputSchema` uses sorted keys for cache stability.
-
-## Testing
-
-```sh
 cd src && go test ./...
 ```
 
-Test files: `tools/glob_test.go`, `tools/custom_test.go`, `agent/env_test.go`. When adding tools or modules, add corresponding `_test.go` files.
+Requires Go 1.24+.
+
+## Key Conventions
+
+- **Standard library preferred** — minimal deps. Direct deps: Bubble Tea stack (`bubbles`, `bubbletea`, `lipgloss`, `x/ansi`), `x/term`, `rivo/uniseg`.
+- **Tools** return `(string, error)` — errors become `tool_result` with `is_error: true` so the agent can recover. Every tool implements `tools.Tool` (Definition, Execute, RequiresConfirmation).
+- **Path sandboxing**: `write` and `edit` are sandboxed to cwd via `safepath.go` (resolves symlinks to prevent escaping).
+- **Security**: API keys are scrubbed from all subprocess environments (bash, custom tools, terminal mode).
+- **Deterministic JSON**: `ContentBlock` and `ToolInputSchema` marshal with sorted map keys — critical for Anthropic's prompt caching (exact byte matching).
+- **No streaming**: synchronous API requests; TUI updates via Bubble Tea message channel from callbacks.
+- **Directory walker** (`walk.go`): skips `.git`, `node_modules`, `vendor`, `__pycache__`, and dot-prefixed directories.
+
+## Architecture Notes
+
+- **Agent loop** (`agent/agent.go`): sends messages in a loop (max 50 iterations). Processes text, thinking, compaction, and tool_use blocks. Continues on `compaction` and `max_tokens` stop reasons.
+- **Two-phase tool execution**: Phase 1 confirms all tools sequentially. Phase 2 runs them — `ConcurrentTool` implementations (dispatch) run in parallel, others sequentially.
+- **Permission modes** cycle via Shift+Tab: Plan → Confirm → YOLO → Terminal. Plan mode enables extended thinking and blocks write/edit/dispatch.
+- **Dispatch** delegates to sub-agents in separate contexts. Sub-agents run as tab-less goroutines with confirmations routed to the parent tab.
+- **Custom tools**: executable scripts in `.cogent/tools/` or `~/.cogent/tools/` with `@tool`/`@description`/`@param`/`@env`/`@confirm` directives.
+- **Settings precedence** (highest → lowest): env vars → project `.cogent/settings` → global `~/.cogent/settings` → project `.cogent/.env` → global `~/.cogent/.env`.
+- **Providers**: Anthropic uses server-side compaction; OpenAI/Gemini/OpenRouter use client-side hybrid compaction. Each implements `api.Provider`.
+
+## Testing
+
+Test files: `tools/glob_test.go`, `tools/custom_test.go`, `agent/env_test.go`, `api/openai_test.go`. Add `_test.go` files when adding tools or modules.

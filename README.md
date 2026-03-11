@@ -209,7 +209,7 @@ monorepo/
 
 Sessions are saved to `.cogent/sessions/` and restored differently by UI mode:
 
-- **TUI**: open tabs are auto-restored on next launch. Closing a tab keeps the session on disk so it can be reopened with `/resume`. Closing the last tab deletes that session file.
+- **TUI**: open tabs are auto-restored on next launch. Closing a tab keeps the session on disk so it can be reopened with `/resume`. Closing the last tab creates a fresh Default tab (the app never quits on tab close).
 - **REPL**: the current session is saved on prompt completion, on `/quit`, and on EOF; `/resume` restores a saved session into the current REPL.
 
 In the TUI, use `/resume` to list saved sessions that aren't currently open, and `/resume <number>` or `/resume <name>` to restore one as a new tab.
