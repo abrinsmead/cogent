@@ -108,6 +108,25 @@ func (r *Registry) Definitions() []any {
 	return result
 }
 
+// PlanDefinitions returns only the tool definitions allowed in Plan mode:
+// read-only tools (RequiresConfirmation == false) and bash.
+func (r *Registry) PlanDefinitions() []any {
+	defs := make([]api.ToolDef, 0, len(r.tools))
+	for _, t := range r.tools {
+		if !t.RequiresConfirmation() || t.Definition().Name == "bash" {
+			defs = append(defs, t.Definition())
+		}
+	}
+	sort.Slice(defs, func(i, j int) bool {
+		return defs[i].Name < defs[j].Name
+	})
+	result := make([]any, len(defs))
+	for i, d := range defs {
+		result[i] = d
+	}
+	return result
+}
+
 // Warnings returns any warnings generated during custom tool discovery
 // (e.g. missing required env vars, parse errors).
 func (r *Registry) Warnings() []string {

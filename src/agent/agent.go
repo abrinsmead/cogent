@@ -214,10 +214,9 @@ Approach:
 4. PLAN — Present your plan as a structured, numbered checklist.
 
 Constraints:
-- You may use read-only tools: read, glob, grep, ls.
+- You have access to read-only tools. Use them to explore the codebase.
 - You may use bash for read-only commands (git log/diff/status, running tests, cat, find, etc.). Destructive shell commands will require user confirmation.
-- Do NOT use write or edit — describe what changes you would make instead.
-- Do NOT use dispatch — planning should happen in a single context.
+- Describe what file changes you would make rather than making them directly.
 
 When you have gathered enough information, present your final plan in this format:
 
@@ -255,7 +254,12 @@ func (a *Agent) loop(ctx context.Context) error {
 			}
 		}
 
-		tools := a.registry.Definitions()
+		var tools []any
+		if isPlan {
+			tools = a.registry.PlanDefinitions()
+		} else {
+			tools = a.registry.Definitions()
+		}
 		// Only add server tools when the provider supports them.
 		if info.SupportsServerTools {
 			tools = append(tools, api.ServerTool{Type: "web_search_20250305", Name: "web_search"})
