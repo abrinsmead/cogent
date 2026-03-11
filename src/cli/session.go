@@ -45,8 +45,8 @@ type session struct {
 	inputHeight  int
 	modeTagWidth int // visual width of " Mode " prefix in prompt box
 	scrollback   bool
-	pastedText  string // stored paste content when input shows collapsed label
-	pasteLabel  string // the "[Pasted N lines]" label inserted into the input
+	pastedText   string // stored paste content when input shows collapsed label
+	pasteLabel   string // the "[Pasted N lines]" label inserted into the input
 
 	// Task browser modal
 	taskModal *taskModal
@@ -55,10 +55,6 @@ type session struct {
 	inputHistory []string // previous commands, oldest first
 	historyIndex int      // -1 = not browsing; 0..len-1 = current position
 	historySaved string   // text that was in the input before browsing started
-
-	// Ghost-text suggestions (LLM-powered, opt-in)
-	suggestion    string           // current ghost text suggestion (empty = none)
-	suggestEngine *suggestionEngine // nil if feature is disabled
 
 	// Status bar stats (per-session)
 	contextUsed int
@@ -232,15 +228,6 @@ func (s *session) rebuildHistory() {
 	}
 	s.historyIndex = -1
 	s.historySaved = ""
-}
-
-// clearSuggestion removes the current ghost-text suggestion and cancels any
-// in-flight suggestion request.
-func (s *session) clearSuggestion() {
-	s.suggestion = ""
-	if s.suggestEngine != nil {
-		s.suggestEngine.cancel()
-	}
 }
 
 // autoName sets the tab name from the first user prompt, unless manually renamed.
