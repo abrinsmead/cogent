@@ -389,7 +389,7 @@ func (m tuiModel) waitForMsg() tea.Cmd {
 }
 
 func dotTick() tea.Cmd {
-	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
 		return dotTickMsg{}
 	})
 }
@@ -1334,9 +1334,9 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 	case tuiClarifyMsg:
 		s.clarify = &inner
 		s.state = tuiStatePrompt
-		s.appendLine(line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")})
 		p := newChoicePrompt(inner.question, inner.choices)
 		s.prompt = &p
+		s.appendLine(line{Type: lineChoice, Data: inner.question + "\x00" + strings.Join(inner.choices, "\x00")})
 		cmds = append(cmds, notifyCmd(s.name+" has a question"), m.waitForMsg())
 
 	case tuiDoneMsg:

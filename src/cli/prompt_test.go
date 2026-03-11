@@ -210,6 +210,20 @@ func TestRenderChoices(t *testing.T) {
 	}
 }
 
+func TestRenderChoicesHighlightsSelectedChoice(t *testing.T) {
+	choices := []string{"Option A", "Option B", "Other (I'll explain)"}
+	p := newChoicePrompt("Choose one:", choices)
+	p.selected = 1
+
+	rendered := p.renderPromptLine()
+	if !strings.Contains(rendered, "Option B") {
+		t.Fatalf("rendered should contain selected choice: %q", rendered)
+	}
+	if !strings.Contains(rendered, "\x1b[") {
+		t.Fatalf("rendered should contain ANSI styling for highlighted selection: %q", rendered)
+	}
+}
+
 func TestHintText(t *testing.T) {
 	tests := []struct {
 		name string
