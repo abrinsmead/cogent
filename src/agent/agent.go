@@ -232,7 +232,7 @@ When you have gathered enough information, present your final plan in this forma
 End with: "Ready to execute — confirm when prompted."`
 
 func (a *Agent) loop(ctx context.Context) error {
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5000; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -350,7 +350,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("agent loop exceeded 50 iterations")
+	return fmt.Errorf("agent loop exceeded 5000 iterations")
 }
 
 // executeTools processes a batch of tool_use blocks. Tools that implement
