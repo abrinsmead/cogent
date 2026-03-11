@@ -986,7 +986,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.taskModal = newTaskModal(detectTaskProvider(), m.width, m.height)
 			s.state = tuiStateTasks
 			s.input.Blur()
-			return m, nil
+			return m, s.taskModal.fetchCmd(s.id, m.msgCh)
 
 		case value == "/resume":
 			return m.handleResume("")
@@ -1274,7 +1274,9 @@ func (m *tuiModel) handleTasks(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.input.Focus()
 			return m, textarea.Blink
 		}
-		s.taskModal.back()
+		if needsFetch := s.taskModal.back(); needsFetch {
+			return m, s.taskModal.fetchCmd(s.id, m.msgCh)
+		}
 		return m, nil
 
 	case "up":
@@ -1286,11 +1288,15 @@ func (m *tuiModel) handleTasks(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
-		s.taskModal.switchView()
+		if needsFetch := s.taskModal.switchView(); needsFetch {
+			return m, s.taskModal.fetchCmd(s.id, m.msgCh)
+		}
 		return m, nil
 
 	case "backspace":
-		s.taskModal.back()
+		if needsFetch := s.taskModal.back(); needsFetch {
+			return m, s.taskModal.fetchCmd(s.id, m.msgCh)
+		}
 		return m, nil
 
 	case "enter":
@@ -1307,7 +1313,9 @@ func (m *tuiModel) handleTasks(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		s.taskModal.enter()
+		if needsFetch := s.taskModal.enter(); needsFetch {
+			return m, s.taskModal.fetchCmd(s.id, m.msgCh)
+		}
 		return m, nil
 
 	case "ctrl+c":
@@ -1416,6 +1424,11 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, textarea.Blink)
 		}
 		saveSession(m.cwd, s, m.tabOrderOf(s))
+
+	case tuiTaskFetchDoneMsg:
+		if s.taskModal != nil {
+			s.taskModal.applyFetch(inner.result, inner.err)
+		}
 	}
 
 	return m, tea.Batch(cmds...)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -130,6 +131,7 @@ type taskModal struct {
 	groupKey  string      // non-empty when drilled into a group
 	groupName string      // for breadcrumb display
 	errMsg    string      // non-empty when the last fetch failed
+	loading   bool        // true while an async fetch is in flight
 
 	cursor     int
 	showDetail bool
@@ -143,21 +145,39 @@ func newTaskModal(provider TaskProvider, w, h int) *taskModal {
 		tabs:     provider.Tabs(),
 		width:    w,
 		height:   h,
+		loading:  true,
 	}
-	tm.fetch(0, "")
 	return tm
 }
 
-// fetch calls the provider and updates the modal state, including errors.
-func (tm *taskModal) fetch(tab int, group string) {
-	tm.errMsg = ""
-	result, err := tm.provider.Fetch(tab, group)
+// tuiTaskFetchDoneMsg delivers async fetch results to the modal.
+type tuiTaskFetchDoneMsg struct {
+	result *TaskResult
+	err    error
+}
+
+// fetchCmd returns a tea.Cmd that runs the provider fetch in a goroutine
+// and sends the result back as a sessionMsg wrapping tuiTaskFetchDoneMsg.
+func (tm *taskModal) fetchCmd(sessionID int, msgCh chan tea.Msg) tea.Cmd {
+	provider := tm.provider
+	tab := tm.tab
+	group := tm.groupKey
+	return func() tea.Msg {
+		result, err := provider.Fetch(tab, group)
+		return sessionMsg{sessionID: sessionID, inner: tuiTaskFetchDoneMsg{result: result, err: err}}
+	}
+}
+
+// applyFetch applies an async fetch result to the modal.
+func (tm *taskModal) applyFetch(result *TaskResult, err error) {
+	tm.loading = false
 	if err != nil {
 		tm.errMsg = err.Error()
 		tm.items = nil
 		tm.groups = nil
 		return
 	}
+	tm.errMsg = ""
 	tm.items = result.Items
 	tm.groups = result.Groups
 }
@@ -204,9 +224,9 @@ func (tm *taskModal) down() {
 	}
 }
 
-func (tm *taskModal) enter() {
+func (tm *taskModal) enter() bool {
 	if tm.showDetail {
-		return
+		return false
 	}
 	if tm.groups != nil && tm.groupKey == "" {
 		// Drill into selected group
@@ -214,36 +234,40 @@ func (tm *taskModal) enter() {
 			g := tm.groups[tm.cursor]
 			tm.groupKey = g.Key
 			tm.groupName = g.Name
-			tm.fetch(tm.tab, g.Key)
+			tm.items = nil
 			tm.cursor = 0
+			tm.loading = true
+			return true
 		}
-		return
+		return false
 	}
 	// Open detail view
 	if tm.selectedItem() != nil {
 		tm.showDetail = true
 	}
+	return false
 }
 
-func (tm *taskModal) back() {
+func (tm *taskModal) back() bool {
 	if tm.showDetail {
 		tm.showDetail = false
-		return
+		return false
 	}
 	if tm.groupKey != "" {
 		// Return to group list
 		tm.groupKey = ""
 		tm.groupName = ""
 		tm.items = nil
-		tm.fetch(tm.tab, "")
 		tm.cursor = 0
-		return
+		tm.loading = true
+		return true
 	}
+	return false
 }
 
-func (tm *taskModal) switchView() {
+func (tm *taskModal) switchView() bool {
 	if tm.showDetail {
-		return
+		return false
 	}
 	tm.tab = (tm.tab + 1) % len(tm.tabs)
 	tm.cursor = 0
@@ -251,7 +275,8 @@ func (tm *taskModal) switchView() {
 	tm.groupName = ""
 	tm.items = nil
 	tm.groups = nil
-	tm.fetch(tm.tab, "")
+	tm.loading = true
+	return true
 }
 
 // ─── Render ─────────────────────────────────────────────────────────────────
@@ -301,6 +326,9 @@ func (tm *taskModal) renderList() string {
 		for _, el := range errLines {
 			lines = append(lines, "  "+taskPriorityUrgent.Render("⚠ "+el))
 		}
+	} else if tm.loading {
+		lines = append(lines, "")
+		lines = append(lines, taskDim.Render("  Loading…"))
 	} else if tm.groups != nil && tm.groupKey == "" {
 		lines = append(lines, tm.renderGroupList(innerWidth)...)
 	} else {
