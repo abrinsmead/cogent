@@ -54,7 +54,7 @@ var (
 			Bold(true)
 
 	tuiStatusValue = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("7"))
+			Foreground(lipgloss.Color("7"))
 
 	tuiStatusGitClean = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("2"))
@@ -81,10 +81,10 @@ var (
 			Background(lipgloss.Color("1")) // white on red
 
 	tuiModeTerminal = lipgloss.NewStyle().
-				Bold(true).
-				Padding(0, 1).
-				Foreground(lipgloss.Color("0")).
-				Background(lipgloss.Color("3")) // black on yellow
+			Bold(true).
+			Padding(0, 1).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("3")) // black on yellow
 
 	// Tab bar styles
 	tuiTabActive = lipgloss.NewStyle().
@@ -173,12 +173,15 @@ type sessionMsg struct {
 // dotTickMsg drives the animated dots in the prompt bar while the agent is running.
 type dotTickMsg struct{}
 
+// tabSpinnerTickMsg drives the animated spinner shown on running tabs.
+type tabSpinnerTickMsg struct{}
+
 // ─── Bubble Tea model ────────────────────────────────────────────────────────
 
 type tuiState int
 
 const (
-	tuiStateInput   tuiState = iota
+	tuiStateInput tuiState = iota
 	tuiStateRunning
 	tuiStatePrompt // unified prompt state (confirm, plan confirm, or choice)
 	tuiStateTasks
@@ -197,24 +200,27 @@ const maxInputHeight = 10 // max lines the input area can grow to
 type tuiModel struct {
 	defaultProvider api.Provider
 	cwd             string
-	width  int
-	height int
+	width           int
+	height          int
 
 	sessions []*session // all open sessions
 	active   int        // index of the currently visible session
 	nextID   int        // monotonically increasing ID for new sessions
 
-	quitting       bool
-	tabFocused     bool // true when the tab bar has focus (arrows navigate tabs)
-	newTabFocused  bool // true when the "+ New Session" button is focused in tab bar
-	tabScroll      int  // index of the first visible tab (for horizontal scrolling)
-	hudMode        hudMode // cycles: StatusBar → Overlay → Off
-	msgCh          chan tea.Msg
-	initialPrompt  string // if set, sent automatically on Init
+	quitting      bool
+	tabFocused    bool    // true when the tab bar has focus (arrows navigate tabs)
+	newTabFocused bool    // true when the "+ New Session" button is focused in tab bar
+	tabScroll     int     // index of the first visible tab (for horizontal scrolling)
+	hudMode       hudMode // cycles: StatusBar → Overlay → Off
+	msgCh         chan tea.Msg
+	initialPrompt string // if set, sent automatically on Init
 
 	splash     *splashModel // non-nil while splash screen is active
 	dotFrame   int          // animation frame for prompt dots
 	dotTicking bool         // true while the dot tick is active
+
+	tabSpinnerFrame   int  // animation frame for running tab spinners
+	tabSpinnerTicking bool // true while the tab spinner tick is active
 
 	escFilterUntil time.Time // swallow escape-sequence fragments until this time
 }
@@ -394,6 +400,12 @@ func dotTick() tea.Cmd {
 	})
 }
 
+func tabSpinnerTick() tea.Cmd {
+	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg {
+		return tabSpinnerTickMsg{}
+	})
+}
+
 // anyRunning returns true if any session is in the running state.
 func (m *tuiModel) anyRunning() bool {
 	for _, s := range m.sessions {
@@ -409,6 +421,15 @@ func (m *tuiModel) ensureDotTick() tea.Cmd {
 	if !m.dotTicking {
 		m.dotTicking = true
 		return dotTick()
+	}
+	return nil
+}
+
+// ensureTabSpinnerTick starts the tab spinner animation tick if not already running.
+func (m *tuiModel) ensureTabSpinnerTick() tea.Cmd {
+	if !m.tabSpinnerTicking {
+		m.tabSpinnerTicking = true
+		return tabSpinnerTick()
 	}
 	return nil
 }
@@ -516,7 +537,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick())
+		return m, tea.Batch(s.sendToAgent(prompt, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.ensureTabSpinnerTick())
 
 	case sessionMsg:
 		tm, cmd := m.handleSessionMsg(msg)
@@ -528,6 +549,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, dotTick())
 		} else {
 			m.dotTicking = false
+		}
+
+	case tabSpinnerTickMsg:
+		m.tabSpinnerFrame++
+		if m.anyRunning() {
+			cmds = append(cmds, tabSpinnerTick())
+		} else {
+			m.tabSpinnerTicking = false
 		}
 	}
 
@@ -545,8 +574,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Ensure dot animation is running while any session is active
+	// Ensure animations are running while any session is active
 	if cmd := m.ensureDotTick(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if cmd := m.ensureTabSpinnerTick(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 
@@ -969,7 +1001,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			s.appendLine(line{Type: lineShellPrompt, Data: value})
 			s.state = tuiStateRunning
 			s.input.Blur()
-			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg(), m.ensureDotTick())
+			return m, tea.Batch(s.runShellCommand(value, m.cwd, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.ensureTabSpinnerTick())
 		}
 
 		s.appendLine(line{Type: linePrompt, Data: value})
@@ -977,7 +1009,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.setWindowTitle()
 		s.state = tuiStateRunning
 		s.input.Blur()
-		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick())
+		return m, tea.Batch(s.sendToAgent(value, m.msgCh), m.waitForMsg(), m.ensureDotTick(), m.ensureTabSpinnerTick())
 
 	default:
 		// If the user edits while a collapsed paste is shown, clear the stored paste
@@ -1075,6 +1107,7 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 			s.sendToAgent("Execute the plan above.", m.msgCh),
 			m.waitForMsg(),
 			m.ensureDotTick(),
+			m.ensureTabSpinnerTick(),
 		)
 	}
 
@@ -1632,7 +1665,7 @@ func (m tuiModel) View() tea.View {
 	}
 
 	b.WriteString(viewportContent)
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	// Build the prompt content
 	var promptContent string
@@ -1867,8 +1900,8 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 		} else if s.state == tuiStateRunning {
 			const spinnerFrames = "◐◓◑◒"
 			frames := []rune(spinnerFrames)
-			frame := frames[m.dotFrame%len(frames)]
-			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+			frame := frames[m.tabSpinnerFrame%len(frames)]
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 			dot = dotStyle.Render(string(frame)) + " "
 		}
 
@@ -2291,7 +2324,7 @@ func overlayHUD(viewportStr string, hudLines []string, totalWidth int) string {
 		}
 	}
 
-	boxInner := maxW + 2 // 1 padding each side
+	boxInner := maxW + 2     // 1 padding each side
 	boxOuter := boxInner + 2 // +2 for border chars │ │
 
 	if boxOuter > totalWidth-4 {
