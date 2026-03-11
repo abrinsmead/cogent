@@ -1916,8 +1916,8 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
-			// Pulsing magenta dot: cycles bright → dim → bright.
-			pulseColors := []string{"201", "165", "129", "93", "129", "165"}
+			// Pulsing magenta dot: cycles between dim shades.
+			pulseColors := []string{"129", "93"}
 			c := pulseColors[m.tabSpinnerFrame%len(pulseColors)]
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(c))
 			dot = dotStyle.Render("●") + " "
