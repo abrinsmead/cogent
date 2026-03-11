@@ -389,7 +389,7 @@ func (m tuiModel) waitForMsg() tea.Cmd {
 }
 
 func dotTick() tea.Cmd {
-	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
 		return dotTickMsg{}
 	})
 }
@@ -1865,8 +1865,11 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 			dot = dotStyle.Render("●") + " "
 		} else if s.state == tuiStateRunning {
-			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-			dot = dotStyle.Render("●") + " "
+			const spinnerFrames = "⠄⠂⠆⠖"
+			frames := []rune(spinnerFrames)
+			frame := frames[m.dotFrame%len(frames)]
+			dotStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+			dot = dotStyle.Render(string(frame)) + " "
 		}
 
 		// Width measures content between │ borders: " " + dot + style(" label ") + " "
