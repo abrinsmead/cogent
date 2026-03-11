@@ -1458,18 +1458,18 @@ func (m *tuiModel) switchToSession(idx int) {
 }
 
 // closeCurrentSession saves and closes the active session tab.
+// If the last session is closed, a fresh Default tab is created instead of quitting.
 func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
-	if len(m.sessions) == 1 {
-		saveSession(m.cwd, m.cur(), 0)
-		m.quitting = true
-		return m, tea.Quit
-	}
 	s := m.cur()
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
 	saveSession(m.cwd, s, 0)
 	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
+	if len(m.sessions) == 0 {
+		ns := m.createSession()
+		ns.name = "Default"
+	}
 	if m.active >= len(m.sessions) {
 		m.active = len(m.sessions) - 1
 	}
