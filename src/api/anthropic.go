@@ -1,11 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -203,53 +201,23 @@ func (p *AnthropicProvider) SendMessage(ctx context.Context, req ProviderRequest
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	maxRetries := 3
-	backoff := 2 * time.Second
-
-	for attempt := range maxRetries {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/messages", bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("X-API-Key", p.apiKey)
-		httpReq.Header.Set("Anthropic-Version", anthropicAPIVersion)
-		httpReq.Header.Set("Anthropic-Beta", "compact-2026-01-12")
-
-		resp, err := p.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-
-		// Retry on rate-limit or overloaded errors
-		if (resp.StatusCode == 429 || resp.StatusCode == 529) && attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			var errResp ErrorResponse
-			if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
-				return nil, fmt.Errorf("API error (%d): %s: %s", resp.StatusCode, errResp.Error.Type, errResp.Error.Message)
-			}
-			return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(respBody))
-		}
-
-		var apiResp Response
-		if err := json.Unmarshal(respBody, &apiResp); err != nil {
-			return nil, fmt.Errorf("unmarshal response: %w", err)
-		}
-		return &apiResp, nil
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/messages", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
 	}
-	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", p.apiKey)
+	httpReq.Header.Set("Anthropic-Version", anthropicAPIVersion)
+	httpReq.Header.Set("Anthropic-Beta", "compact-2026-01-12")
+
+	respBody, err := doRequest(ctx, p.httpClient, httpReq, body)
+	if err != nil {
+		return nil, err
+	}
+
+	var apiResp Response
+	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &apiResp, nil
 }

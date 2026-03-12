@@ -1,11 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
@@ -129,49 +127,24 @@ func (p *OpenRouterProvider) SendMessage(ctx context.Context, req ProviderReques
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	maxRetries := 3
-	backoff := 2 * time.Second
-
-	for attempt := range maxRetries {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-		resp, err := p.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-
-		if resp.StatusCode == 429 && attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("OpenRouter API error (%d): %s", resp.StatusCode, string(respBody))
-		}
-
-		var oaiResp oaiResponse
-		if err := json.Unmarshal(respBody, &oaiResp); err != nil {
-			return nil, fmt.Errorf("unmarshal response: %w", err)
-		}
-
-		return p.translateResponse(oaiResp), nil
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/v1/chat/completions", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
 	}
-	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	respBody, err := doRequest(ctx, p.httpClient, httpReq, body)
+	if err != nil {
+		return nil, err
+	}
+
+	var oaiResp oaiResponse
+	if err := json.Unmarshal(respBody, &oaiResp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	return p.translateResponse(oaiResp), nil
 }
 
 // translateMessages reuses the OpenAI wire format since OpenRouter is compatible.

@@ -1,11 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"time"
@@ -164,48 +162,23 @@ func (p *GeminiProvider) SendMessage(ctx context.Context, req ProviderRequest) (
 
 	endpoint := fmt.Sprintf("%s/models/%s:generateContent?key=%s", geminiBaseURL, p.model, p.apiKey)
 
-	maxRetries := 3
-	backoff := 2 * time.Second
-
-	for attempt := range maxRetries {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		resp, err := p.httpClient.Do(httpReq)
-		if err != nil {
-			return nil, fmt.Errorf("send request: %w", err)
-		}
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
-		}
-
-		if resp.StatusCode == 429 && attempt < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-			}
-			backoff *= 2
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("Gemini API error (%d): %s", resp.StatusCode, string(respBody))
-		}
-
-		var gemResp geminiResponse
-		if err := json.Unmarshal(respBody, &gemResp); err != nil {
-			return nil, fmt.Errorf("unmarshal response: %w", err)
-		}
-
-		return p.translateResponse(gemResp), nil
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
 	}
-	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	respBody, err := doRequest(ctx, p.httpClient, httpReq, body)
+	if err != nil {
+		return nil, err
+	}
+
+	var gemResp geminiResponse
+	if err := json.Unmarshal(respBody, &gemResp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	return p.translateResponse(gemResp), nil
 }
 
 func (p *GeminiProvider) buildRequest(req ProviderRequest) geminiRequest {

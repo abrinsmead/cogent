@@ -234,6 +234,7 @@ End with: "Ready to execute — confirm when prompted."`
 func (a *Agent) loop(ctx context.Context) error {
 	for i := 0; i < 5000; i++ {
 		if err := ctx.Err(); err != nil {
+			a.rollbackPendingToolUse()
 			return err
 		}
 		system := a.system
@@ -285,6 +286,7 @@ func (a *Agent) loop(ctx context.Context) error {
 			MaxTokens: 16384,
 		})
 		if err != nil {
+			a.rollbackPendingToolUse()
 			return fmt.Errorf("api call: %w", err)
 		}
 		a.onUsage(resp.Usage)
@@ -350,7 +352,28 @@ func (a *Agent) loop(ctx context.Context) error {
 			return nil
 		}
 	}
+	a.rollbackPendingToolUse()
 	return fmt.Errorf("agent loop exceeded 5000 iterations")
+}
+
+// rollbackPendingToolUse checks if the last assistant message contains tool_use
+// blocks without matching tool_result responses. If so, it removes the dangling
+// assistant message to keep the conversation valid. Without this, a cancelled or
+// failed request would leave an unpaired tool_use that breaks subsequent API calls.
+func (a *Agent) rollbackPendingToolUse() {
+	if len(a.messages) == 0 {
+		return
+	}
+	last := a.messages[len(a.messages)-1]
+	if last.Role != api.RoleAssistant {
+		return
+	}
+	for _, block := range last.Content {
+		if block.Type == "tool_use" {
+			a.messages = a.messages[:len(a.messages)-1]
+			return
+		}
+	}
 }
 
 // executeTools processes a batch of tool_use blocks. Tools that implement
