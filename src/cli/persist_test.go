@@ -12,7 +12,7 @@ import (
 )
 
 func TestSessionDataRoundTrip(t *testing.T) {
-	sd := sessionData{
+	sd := SessionData{
 		ID:             "abc12345",
 		Name:           "Test Session",
 		NameSet:        true,
@@ -44,7 +44,7 @@ func TestSessionDataRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 
-	var got sessionData
+	var got SessionData
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -89,6 +89,30 @@ func TestSessionDataRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionDataRuntimeIDRoundTrip(t *testing.T) {
+	sd := SessionData{
+		ID:        "test123",
+		Name:      "Remote Session",
+		RuntimeID: "sandbox-abc123",
+		CreatedAt: time.Now().Truncate(time.Second),
+		UpdatedAt: time.Now().Truncate(time.Second),
+	}
+
+	b, err := json.Marshal(sd)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got SessionData
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.RuntimeID != sd.RuntimeID {
+		t.Errorf("RuntimeID = %q, want %q", got.RuntimeID, sd.RuntimeID)
+	}
+}
+
 func TestRenderLineRoundTrip(t *testing.T) {
 	// Verify that all line types render without panicking.
 	lines := []line{
@@ -130,34 +154,40 @@ func TestRenderLineRoundTrip(t *testing.T) {
 	}
 }
 
-func TestListSavedSessions(t *testing.T) {
+func TestLocalSessionStore(t *testing.T) {
 	dir := t.TempDir()
-	sessDir := filepath.Join(dir, ".cogent", "sessions")
-	os.MkdirAll(sessDir, 0755)
+	store := NewLocalSessionStore(dir)
 
 	// No sessions yet
-	got := listSavedSessions(dir)
+	got, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	if len(got) != 0 {
 		t.Errorf("expected 0 sessions, got %d", len(got))
 	}
 
-	// Write two sessions
-	sd1 := sessionData{
+	// Save two sessions
+	sd1 := SessionData{
 		ID:        "aaa",
 		Name:      "First",
 		UpdatedAt: time.Now().Add(-time.Hour),
 	}
-	sd2 := sessionData{
+	sd2 := SessionData{
 		ID:        "bbb",
 		Name:      "Second",
 		UpdatedAt: time.Now(),
 	}
-	for _, sd := range []sessionData{sd1, sd2} {
-		b, _ := json.Marshal(sd)
-		os.WriteFile(filepath.Join(sessDir, sd.ID+".json"), b, 0644)
+	for _, sd := range []SessionData{sd1, sd2} {
+		if err := store.Save(sd); err != nil {
+			t.Fatalf("Save(%s): %v", sd.ID, err)
+		}
 	}
 
-	got = listSavedSessions(dir)
+	got, err = store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(got))
 	}
@@ -168,6 +198,27 @@ func TestListSavedSessions(t *testing.T) {
 	if got[1].ID != "aaa" {
 		t.Errorf("expected second session ID=aaa, got %q", got[1].ID)
 	}
+
+	// Load single session
+	loaded, err := store.Load("aaa")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Name != "First" {
+		t.Errorf("Load name = %q, want First", loaded.Name)
+	}
+
+	// Delete
+	if err := store.Delete("aaa"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	got, err = store.List()
+	if err != nil {
+		t.Fatalf("List after delete: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 session after delete, got %d", len(got))
+	}
 }
 
 func TestDeleteSessionFile(t *testing.T) {
@@ -175,14 +226,15 @@ func TestDeleteSessionFile(t *testing.T) {
 	sessDir := filepath.Join(dir, ".cogent", "sessions")
 	os.MkdirAll(sessDir, 0755)
 
-	path := filepath.Join(sessDir, "test123.json")
-	os.WriteFile(path, []byte("{}"), 0644)
+	store := NewLocalSessionStore(dir)
+	store.Save(SessionData{ID: "test123", Name: "Test"})
 
+	path := filepath.Join(sessDir, "test123.json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("file should exist before delete")
 	}
 
-	deleteSessionFile(dir, "test123")
+	store.Delete("test123")
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("file should not exist after delete")
@@ -264,11 +316,11 @@ func TestParseResumeNumber(t *testing.T) {
 
 func TestSaveAllSessionsCreatesFiles(t *testing.T) {
 	dir := t.TempDir()
-	sessDir := filepath.Join(dir, ".cogent", "sessions")
+	store := NewLocalSessionStore(dir)
 
-	// Write two sessions directly (simulating what saveAllSessions does).
+	// Save two sessions
 	now := time.Now()
-	for _, sd := range []sessionData{
+	for _, sd := range []SessionData{
 		{
 			ID:        "sess_aaa",
 			Name:      "First",
@@ -286,12 +338,11 @@ func TestSaveAllSessionsCreatesFiles(t *testing.T) {
 			UpdatedAt: now,
 		},
 	} {
-		os.MkdirAll(sessDir, 0755)
-		b, _ := json.Marshal(sd)
-		os.WriteFile(filepath.Join(sessDir, sd.ID+".json"), b, 0644)
+		store.Save(sd)
 	}
 
 	// Both files should exist
+	sessDir := filepath.Join(dir, ".cogent", "sessions")
 	for _, id := range []string{"sess_aaa", "sess_bbb"} {
 		path := filepath.Join(sessDir, id+".json")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -300,7 +351,7 @@ func TestSaveAllSessionsCreatesFiles(t *testing.T) {
 	}
 
 	// Verify we can list them back, sorted newest first
-	saved := listSavedSessions(dir)
+	saved, _ := store.List()
 	if len(saved) != 2 {
 		t.Fatalf("expected 2 saved sessions, got %d", len(saved))
 	}
@@ -311,28 +362,26 @@ func TestSaveAllSessionsCreatesFiles(t *testing.T) {
 
 func TestTabOrderFiltering(t *testing.T) {
 	dir := t.TempDir()
-	sessDir := filepath.Join(dir, ".cogent", "sessions")
-	os.MkdirAll(sessDir, 0755)
+	store := NewLocalSessionStore(dir)
 
 	now := time.Now()
-	sessions := []sessionData{
+	sessions := []SessionData{
 		{ID: "tab1", Name: "Tab One", TabOrder: 2, UpdatedAt: now.Add(-time.Minute)},
 		{ID: "tab2", Name: "Tab Two", TabOrder: 1, UpdatedAt: now},
 		{ID: "closed1", Name: "Closed", TabOrder: 0, UpdatedAt: now.Add(-time.Hour)},
 	}
 	for _, sd := range sessions {
-		b, _ := json.Marshal(sd)
-		os.WriteFile(filepath.Join(sessDir, sd.ID+".json"), b, 0644)
+		store.Save(sd)
 	}
 
-	saved := listSavedSessions(dir)
+	saved, _ := store.List()
 	if len(saved) != 3 {
 		t.Fatalf("expected 3 sessions, got %d", len(saved))
 	}
 
 	// Filter to tab sessions and sort by TabOrder
-	var tabSessions []sessionData
-	var closedSessions []sessionData
+	var tabSessions []SessionData
+	var closedSessions []SessionData
 	for _, sd := range saved {
 		if sd.TabOrder > 0 {
 			tabSessions = append(tabSessions, sd)
@@ -360,5 +409,18 @@ func TestTabOrderFiltering(t *testing.T) {
 	}
 	if tabSessions[1].ID != "tab1" {
 		t.Errorf("expected second tab ID=tab1 (order 2), got %q (order %d)", tabSessions[1].ID, tabSessions[1].TabOrder)
+	}
+}
+
+func TestInProcessRuntime(t *testing.T) {
+	rt := &InProcessRuntime{}
+	if rt.Kind() != RuntimeLocal {
+		t.Errorf("Kind() = %v, want RuntimeLocal", rt.Kind())
+	}
+	if rt.ID() != "" {
+		t.Errorf("ID() = %q, want empty", rt.ID())
+	}
+	if rt.Status() != StatusReady {
+		t.Errorf("Status() = %v, want StatusReady", rt.Status())
 	}
 }

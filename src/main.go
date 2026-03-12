@@ -56,45 +56,47 @@ func main() {
 	}
 }
 
-func setup() (cwd string, provider api.Provider, err error) {
+func setup() (cwd string, provider api.Provider, store cli.SessionStore, rt cli.Runtime, err error) {
 	cwd, err = os.Getwd()
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot determine working directory: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("cannot determine working directory: %w", err)
 	}
 	if err := config.Load(); err != nil {
-		return "", nil, fmt.Errorf("loading global settings: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("loading global settings: %w", err)
 	}
 	spec := api.DefaultModelSpec()
 	provider, err = api.NewProvider(spec)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w\nSet API keys in the environment or in ~/.cogent/settings", err)
+		return "", nil, nil, nil, fmt.Errorf("%w\nSet API keys in the environment or in ~/.cogent/settings", err)
 	}
-	return cwd, provider, nil
+	store = cli.NewLocalSessionStore(cwd)
+	rt = &cli.InProcessRuntime{}
+	return cwd, provider, store, rt, nil
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
-	cwd, provider, err := setup()
+	cwd, provider, store, rt, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewTUI(provider, cwd, prompt).Run()
+	return cli.NewTUI(provider, cwd, prompt, store, rt).Run()
 }
 
 func runREPL(cmd *cobra.Command, args []string) error {
-	cwd, provider, err := setup()
+	cwd, provider, store, rt, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewInteractive(provider, cwd, prompt).Run()
+	return cli.NewInteractive(provider, cwd, prompt, store, rt).Run()
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
 	if prompt == "" {
 		return fmt.Errorf("agent mode requires --prompt: cogent agent --prompt \"...\"")
 	}
-	cwd, provider, err := setup()
+	cwd, provider, _, rt, err := setup()
 	if err != nil {
 		return err
 	}
-	return cli.NewHeadless(provider, cwd, prompt).Run()
+	return cli.NewHeadless(provider, cwd, prompt, rt).Run()
 }

@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -21,8 +20,10 @@ type Interactive struct {
 	provider api.Provider
 	cwd      string
 	prompt   string // initial prompt (optional)
+	store    SessionStore
+	rt       Runtime
 
-	ag          *agent.Agent
+	as          AgentSession
 	persistID   string
 	sessionName string
 	nameSet     bool
@@ -34,11 +35,13 @@ type Interactive struct {
 	stdinCh chan string
 }
 
-func NewInteractive(provider api.Provider, cwd, prompt string) *Interactive {
+func NewInteractive(provider api.Provider, cwd, prompt string, store SessionStore, rt Runtime) *Interactive {
 	return &Interactive{
 		provider:  provider,
 		cwd:       cwd,
 		prompt:    prompt,
+		store:     store,
+		rt:        rt,
 		persistID: generatePersistID(),
 		createdAt: time.Now(),
 		stdinCh:   make(chan string),
@@ -62,7 +65,7 @@ func (it *Interactive) Run() error {
 	confirmReqCh := make(chan confirmRequest)
 	confirmReplyCh := make(chan agent.ConfirmResult)
 
-	it.ag = agent.New(it.provider, it.cwd,
+	as, err := it.rt.NewSession(it.provider, it.cwd,
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("\n%s\n", text)
 		}),
@@ -108,18 +111,22 @@ func (it *Interactive) Run() error {
 			fmt.Printf("%s  ⚡ context compacted%s\n", Dim, Reset)
 		}),
 	)
+	if err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
+	it.as = as
 
 	// Session start marker
 	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
 	fmt.Printf("%s  ● session started %s%s\n", Dim, ts, Reset)
 
 	// Show custom tools
-	if names := it.ag.Registry().CustomToolNames(); len(names) > 0 {
+	if names := it.as.Registry().CustomToolNames(); len(names) > 0 {
 		fmt.Printf("%s  custom tools: %s%s\n", Dim, strings.Join(names, ", "), Reset)
 	}
 
 	// Print banner
-	mode := it.ag.GetPermissionMode()
+	mode := it.as.GetPermissionMode()
 	fmt.Printf("%scogent%s %s(%s)%s\n", Bold, Reset, Dim, mode, Reset)
 
 	// Handle initial prompt if provided
@@ -187,7 +194,7 @@ func (it *Interactive) runPrompt(prompt string, confirmReqCh chan confirmRequest
 
 	doneCh := make(chan error, 1)
 	go func() {
-		doneCh <- it.ag.SendCtx(ctx, prompt)
+		doneCh <- it.as.SendCtx(ctx, prompt)
 	}()
 
 	for {
@@ -248,16 +255,16 @@ func (it *Interactive) handleCommand(input string) (handled bool, quit bool) {
 		return true, true
 
 	case input == "/clear":
-		it.ag.Reset()
+		it.as.Reset()
 		it.totalCost = 0
 		it.contextUsed = 0
 		fmt.Printf("%s(cleared)%s\n", Dim, Reset)
 		return true, false
 
 	case input == "/mode":
-		cur := it.ag.GetPermissionMode()
+		cur := it.as.GetPermissionMode()
 		next := agent.CyclePermissionMode(cur)
-		it.ag.SetPermissionMode(next)
+		it.as.SetPermissionMode(next)
 		fmt.Printf("%s  mode → %s%s\n", Dim, next, Reset)
 		return true, false
 
@@ -287,7 +294,7 @@ func (it *Interactive) handleCommand(input string) (handled bool, quit bool) {
 			return true, false
 		}
 		it.provider = p
-		it.ag.SetProvider(p)
+		it.as.SetProvider(p)
 		it.contextUsed = 0
 		fmt.Printf("%s  model → %s/%s%s\n", Dim, spec.Provider, spec.Model, Reset)
 		return true, false
@@ -311,7 +318,7 @@ func (it *Interactive) handleCommand(input string) (handled bool, quit bool) {
 }
 
 func (it *Interactive) handleResume(arg string) {
-	sessions := listSavedSessions(it.cwd)
+	sessions, _ := it.store.List()
 	if len(sessions) == 0 {
 		fmt.Printf("%sNo saved sessions found.%s\n", Dim, Reset)
 		return
@@ -328,7 +335,7 @@ func (it *Interactive) handleResume(arg string) {
 		return
 	}
 
-	var sd *sessionData
+	var sd *SessionData
 	if n, err := strconv.Atoi(arg); err == nil && n >= 1 && n <= len(sessions) {
 		sd = &sessions[n-1]
 	} else {
@@ -351,16 +358,16 @@ func (it *Interactive) handleResume(arg string) {
 		spec := api.ParseModelSpec(sd.Model)
 		if p, err := api.NewProvider(spec); err == nil {
 			it.provider = p
-			it.ag.SetProvider(p)
+			it.as.SetProvider(p)
 		}
 	}
 
-	it.ag.SetMessages(sd.Messages)
+	it.as.SetMessages(sd.Messages)
 	at := make(map[string]bool)
 	for _, name := range sd.AllowedTools {
 		at[name] = true
 	}
-	it.ag.SetAllowedTools(at)
+	it.as.SetAllowedTools(at)
 	it.persistID = sd.ID
 	it.sessionName = sd.Name
 	it.nameSet = sd.NameSet
@@ -370,13 +377,13 @@ func (it *Interactive) handleResume(arg string) {
 
 	switch sd.PermissionMode {
 	case "Plan":
-		it.ag.SetPermissionMode(agent.ModePlan)
+		it.as.SetPermissionMode(agent.ModePlan)
 	case "YOLO":
-		it.ag.SetPermissionMode(agent.ModeYOLO)
+		it.as.SetPermissionMode(agent.ModeYOLO)
 	case "Terminal":
-		it.ag.SetPermissionMode(agent.ModeTerminal)
+		it.as.SetPermissionMode(agent.ModeTerminal)
 	default:
-		it.ag.SetPermissionMode(agent.ModeConfirm)
+		it.as.SetPermissionMode(agent.ModeConfirm)
 	}
 
 	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
@@ -384,30 +391,23 @@ func (it *Interactive) handleResume(arg string) {
 }
 
 func (it *Interactive) save() {
-	if len(it.ag.Messages()) == 0 {
-		return
-	}
-	dir := sessionsDir(it.cwd)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if len(it.as.Messages()) == 0 {
 		return
 	}
 	info := it.provider.Info()
-	data := sessionData{
+	data := SessionData{
 		ID:             it.persistID,
 		Name:           it.sessionName,
 		NameSet:        it.nameSet,
 		Model:          info.ProviderID + "/" + info.Model,
-		Messages:       it.ag.Messages(),
-		PermissionMode: it.ag.GetPermissionMode().String(),
-		AllowedTools:   mapKeys(it.ag.AllowedTools()),
+		RuntimeID:      it.rt.ID(),
+		Messages:       it.as.Messages(),
+		PermissionMode: it.as.GetPermissionMode().String(),
+		AllowedTools:   mapKeys(it.as.AllowedTools()),
 		TotalCost:      it.totalCost,
 		ContextUsed:    it.contextUsed,
 		CreatedAt:      it.createdAt,
 		UpdatedAt:      time.Now(),
 	}
-	b, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	os.WriteFile(sessionFilePath(it.cwd, it.persistID), b, 0644)
+	it.store.Save(data)
 }

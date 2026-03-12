@@ -30,9 +30,10 @@ type session struct {
 	nameSet   bool // true if user explicitly renamed via /rename
 	createdAt time.Time
 
-	provider api.Provider // per-session provider (each session can use a different model)
-	agent    *agent.Agent
-	output   viewport.Model
+	provider     api.Provider  // per-session provider (each session can use a different model)
+	runtime      Runtime       // runtime that owns this session's agent execution
+	agentSession AgentSession  // abstracted agent session (in-process, container, or remote)
+	output       viewport.Model
 	input    textarea.Model
 	slines   []line   // structured lines (persisted)
 	rlines   []string // rendered lines (for viewport display)
@@ -72,7 +73,7 @@ func inputPlaceholder(mode agent.PermissionMode) string {
 // newSession creates a session with its own agent, textarea, and viewport.
 // The unified msgCh is shared across all sessions — callbacks tag messages
 // with the session ID via sessionMsg.
-func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *session {
+func newSession(id int, provider api.Provider, rt Runtime, cwd string, msgCh chan tea.Msg) *session {
 	ta := textarea.New()
 	ta.Placeholder = inputPlaceholder(agent.ModeConfirm)
 	ta.SetPromptFunc(2, func(info textarea.PromptInfo) string {
@@ -116,6 +117,7 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 		name:         "Default",
 		createdAt:    time.Now(),
 		provider:     provider,
+		runtime:      rt,
 		input:        ta,
 		output:       vp,
 		state:        tuiStateInput,
@@ -126,7 +128,7 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 		s.name = fmt.Sprintf("Session %d", id+1)
 	}
 
-	s.agent = agent.New(provider, cwd,
+	as, _ := rt.NewSession(provider, cwd,
 		agent.WithTextCallback(func(text string) {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiAppendLineMsg{line: line{Type: lineText, Data: text}}}
 		}),
@@ -149,6 +151,7 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 			msgCh <- sessionMsg{sessionID: id, inner: tuiCompactionMsg{}}
 		}),
 	)
+	s.agentSession = as
 
 	s.updateModeTagWidth()
 
@@ -158,7 +161,7 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 	s.rlines = []string{renderLine(s.slines[0])}
 
 	// Show active custom tools at startup
-	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
+	if entries := s.agentSession.Registry().CustomToolInfo(); len(entries) > 0 {
 		s.appendLine(line{Type: lineToolsLoaded, Data: formatToolEntries(entries)})
 	}
 
@@ -393,7 +396,7 @@ func (s *session) sendToAgent(prompt string, msgCh chan tea.Msg) tea.Cmd {
 	s.cancelFn = cancel
 	id := s.id
 	return func() tea.Msg {
-		err := s.agent.SendCtx(ctx, prompt)
+		err := s.agentSession.SendCtx(ctx, prompt)
 		if err != nil && ctx.Err() != nil {
 			msgCh <- sessionMsg{sessionID: id, inner: tuiDoneMsg{err: nil}}
 		} else {
@@ -462,7 +465,7 @@ func (s *session) updateModeTagWidth() {
 
 // renderModeBar returns the styled mode label for the mode bar section.
 func (s *session) renderModeBar() string {
-	mode := s.agent.GetPermissionMode()
+	mode := s.agentSession.GetPermissionMode()
 	var style lipgloss.Style
 	switch mode {
 	case agent.ModePlan:
@@ -506,6 +509,12 @@ func (s *session) renderStatusBar(cwd string) string {
 		if gitDiff != "" {
 			left += " " + gitDiff
 		}
+	}
+
+	// Show runtime ID for remote sessions
+	if s.runtime != nil && s.runtime.Kind() == RuntimeRemote {
+		rtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+		left += sep + tuiStatusBar.Render("rt ") + rtStyle.Render(s.runtime.ID())
 	}
 
 	left += tuiStatusBar.Render(" ")
@@ -555,6 +564,12 @@ func (s *session) renderHUD(cwd string) []string {
 		if gitDiff != "" {
 			lines = append(lines, tuiDim.Render("dif ")+gitDiff)
 		}
+	}
+
+	// Show runtime ID for remote sessions
+	if s.runtime != nil && s.runtime.Kind() == RuntimeRemote {
+		rtStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+		lines = append(lines, dim.Render("rt  ")+rtStyle.Render(s.runtime.ID()))
 	}
 
 	return lines

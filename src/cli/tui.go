@@ -110,6 +110,15 @@ var (
 	tuiTabNeedsAttention = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("3")).
 				Bold(true)
+
+	// Remote runtime tabs render in blue text
+	tuiTabRemote = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("4"))
+
+	tuiTabRemoteActive = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("4")).
+				Background(lipgloss.Color("8"))
 )
 
 // formatUserPrompt returns the display string for a user prompt in chat history.
@@ -124,14 +133,16 @@ type TUI struct {
 	provider api.Provider
 	cwd      string
 	prompt   string // optional initial prompt to send on startup
+	store    SessionStore
+	rt       Runtime
 }
 
-func NewTUI(provider api.Provider, cwd string, prompt string) *TUI {
-	return &TUI{provider: provider, cwd: cwd, prompt: prompt}
+func NewTUI(provider api.Provider, cwd string, prompt string, store SessionStore, rt Runtime) *TUI {
+	return &TUI{provider: provider, cwd: cwd, prompt: prompt, store: store, rt: rt}
 }
 
 func (t *TUI) Run() error {
-	m := newTUIModel(t.provider, t.cwd, t.prompt)
+	m := newTUIModel(t.provider, t.cwd, t.prompt, t.store, t.rt)
 	p := tea.NewProgram(m)
 	_, err := p.Run()
 	return err
@@ -200,6 +211,8 @@ const maxInputHeight = 10 // max lines the input area can grow to
 type tuiModel struct {
 	defaultProvider api.Provider
 	cwd             string
+	store           SessionStore
+	rt              Runtime
 	width           int
 	height          int
 
@@ -255,13 +268,15 @@ func (m *tuiModel) sessionIndexByID(id int) int {
 	return -1
 }
 
-func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
+func newTUIModel(provider api.Provider, cwd string, prompt string, store SessionStore, rt Runtime) tuiModel {
 	msgCh := make(chan tea.Msg, 64)
 
 	splash := newSplashModel()
 	m := tuiModel{
 		defaultProvider: provider,
 		cwd:             cwd,
+		store:           store,
+		rt:              rt,
 		msgCh:           msgCh,
 		initialPrompt:   prompt,
 		nextID:          0,
@@ -270,8 +285,8 @@ func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 	}
 
 	// Auto-restore saved sessions that had open tabs.
-	saved := listSavedSessions(cwd)
-	var tabSessions []sessionData
+	saved, _ := store.List()
+	var tabSessions []SessionData
 	for _, sd := range saved {
 		if sd.TabOrder > 0 {
 			tabSessions = append(tabSessions, sd)
@@ -290,7 +305,7 @@ func newTUIModel(provider api.Provider, cwd string, prompt string) tuiModel {
 		m.active = 0
 	} else {
 		// No saved tab sessions — create a fresh default session
-		s := newSession(m.nextID, provider, cwd, msgCh)
+		s := newSession(m.nextID, provider, rt, cwd, msgCh)
 		m.nextID++
 		m.sessions = []*session{s}
 		m.active = 0
@@ -310,7 +325,7 @@ func (m *tuiModel) wireTools(s *session) {
 
 	// Wire clarify tool for this session
 	ct := &tools.ClarifyTool{}
-	s.agent.Registry().RegisterTool(ct)
+	s.agentSession.Registry().RegisterTool(ct)
 	ct.Ask = func(question string, choices []string) (string, error) {
 		reply := make(chan string)
 		msgCh <- sessionMsg{sessionID: s.id, inner: tuiClarifyMsg{
@@ -321,7 +336,7 @@ func (m *tuiModel) wireTools(s *session) {
 
 	// Wire dispatch tool for this session
 	dt := &tools.DispatchTool{}
-	s.agent.Registry().RegisterTool(dt)
+	s.agentSession.Registry().RegisterTool(dt)
 	dt.Spawn = func(task string) (string, error) {
 		reg := tools.NewRegistry(cwd)
 
@@ -348,7 +363,7 @@ func (m *tuiModel) wireTools(s *session) {
 
 		ag := agent.New(subProvider, cwd,
 			agent.WithRegistry(reg),
-			agent.WithPermissionMode(s.agent.GetPermissionMode()),
+			agent.WithPermissionMode(s.agentSession.GetPermissionMode()),
 			agent.WithConfirmCallback(func(name string, input map[string]any) agent.ConfirmResult {
 				reply := make(chan agent.ConfirmResult)
 				msgCh <- sessionMsg{sessionID: parentID, inner: tuiConfirmMsg{
@@ -369,7 +384,7 @@ func (m *tuiModel) wireTools(s *session) {
 
 // createSession creates a new session and adds it to the model.
 func (m *tuiModel) createSession() *session {
-	s := newSession(m.nextID, m.defaultProvider, m.cwd, m.msgCh)
+	s := newSession(m.nextID, m.defaultProvider, m.rt, m.cwd, m.msgCh)
 	m.nextID++
 	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
@@ -807,8 +822,8 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case "shift+tab":
 		if s.state == tuiStateInput || s.state == tuiStateRunning {
-			newMode := agent.CyclePermissionMode(s.agent.GetPermissionMode())
-			s.agent.SetPermissionMode(newMode)
+			newMode := agent.CyclePermissionMode(s.agentSession.GetPermissionMode())
+			s.agentSession.SetPermissionMode(newMode)
 			if newMode == agent.ModeTerminal {
 				s.input.SetPromptFunc(2, func(info textarea.PromptInfo) string {
 					if info.LineNumber == 0 {
@@ -854,7 +869,7 @@ func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				nextSpec := models[nextIdx]
 				if p, err := api.NewProvider(nextSpec); err == nil {
 					s.provider = p
-					s.agent.SetProvider(p)
+					s.agentSession.SetProvider(p)
 					s.contextUsed = 0
 					s.appendLine(line{Type: lineModelChange, Data: nextSpec.String()})
 				} else {
@@ -939,14 +954,14 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case value == "/clear":
-			s.agent.Reset()
+			s.agentSession.Reset()
 			s.slines = nil
 			s.rlines = nil
 			s.totalCost = 0
 			s.contextUsed = 0
 			s.output.SetContent("")
 			s.appendLine(line{Type: lineInfo, Data: "Conversation cleared."})
-			deleteSessionFile(m.cwd, s.persistID)
+			m.store.Delete(s.persistID)
 			return m, nil
 
 		case value == "/close":
@@ -1006,7 +1021,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				s.appendLine(line{Type: lineInfo, Data: "  model switch failed: " + err.Error()})
 			} else {
 				s.provider = p
-				s.agent.SetProvider(p)
+				s.agentSession.SetProvider(p)
 				s.contextUsed = 0
 				s.appendLine(line{Type: lineModelChange, Data: spec.String()})
 			}
@@ -1027,7 +1042,7 @@ func (m *tuiModel) handleInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Terminal mode: run as shell command
-		if s.agent.GetPermissionMode() == agent.ModeTerminal {
+		if s.agentSession.GetPermissionMode() == agent.ModeTerminal {
 			s.appendLine(line{Type: lineShellPrompt, Data: value})
 			s.state = tuiStateRunning
 			s.input.Blur()
@@ -1126,7 +1141,7 @@ func (m *tuiModel) handlePromptPlanConfirm(msg tea.KeyPressMsg) (tea.Model, tea.
 	accept := func() (tea.Model, tea.Cmd) {
 		s.prompt = nil
 		s.appendLine(line{Type: lineConfirmAllow})
-		s.agent.SetPermissionMode(agent.ModeConfirm)
+		s.agentSession.SetPermissionMode(agent.ModeConfirm)
 		s.input.Prompt = "❯ "
 		s.input.Placeholder = inputPlaceholder(agent.ModeConfirm)
 		s.appendLine(line{Type: lineModeChange, Data: agent.ModeConfirm.String()})
@@ -1413,7 +1428,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 		if inner.err != nil {
 			s.state = tuiStateInput
 			s.appendLine(line{Type: lineError, Data: inner.err.Error()})
-		} else if s.agent.GetPermissionMode() == agent.ModePlan && s.agent.PlanReady() {
+		} else if s.agentSession.GetPermissionMode() == agent.ModePlan && s.agentSession.PlanReady() {
 			// Planning finished with a ready signal — ask to switch to Confirm.
 			s.state = tuiStatePrompt
 			s.appendLine(line{Type: linePlanConfirm})
@@ -1428,7 +1443,7 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, textarea.Blink)
 		}
 		cmds = append(cmds, notifyCmd(s.name+" is done"))
-		saveSession(m.cwd, s, m.tabOrderOf(s))
+		m.saveSession(s, m.tabOrderOf(s))
 
 	case tuiShellDoneMsg:
 		s.state = tuiStateInput
@@ -1446,13 +1461,13 @@ func (m *tuiModel) handleSessionMsg(msg sessionMsg) (tea.Model, tea.Cmd) {
 			if inner.err != nil {
 				assistantText += "\nError: " + inner.err.Error()
 			}
-			s.agent.AppendHistory(userText, assistantText)
+			s.agentSession.AppendHistory(userText, assistantText)
 		}
 		if s.id == m.cur().id {
 			s.input.Focus()
 			cmds = append(cmds, textarea.Blink)
 		}
-		saveSession(m.cwd, s, m.tabOrderOf(s))
+		m.saveSession(s, m.tabOrderOf(s))
 
 	case tuiTaskFetchDoneMsg:
 		if s.taskModal != nil {
@@ -1488,7 +1503,7 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 	if s.cancelFn != nil {
 		s.cancelFn()
 	}
-	saveSession(m.cwd, s, 0)
+	m.saveSession(s, 0)
 	m.sessions = append(m.sessions[:m.active], m.sessions[m.active+1:]...)
 	if len(m.sessions) == 0 {
 		ns := m.createSession()
@@ -1510,10 +1525,10 @@ func (m *tuiModel) closeCurrentSession() (tea.Model, tea.Cmd) {
 // handleResume lists saved sessions or resumes one by number/name.
 func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 	s := m.cur()
-	saved := listSavedSessions(m.cwd)
+	saved, _ := m.store.List()
 
 	// Filter to sessions not in a tab (TabOrder == 0).
-	var available []sessionData
+	var available []SessionData
 	for _, sd := range saved {
 		if sd.TabOrder == 0 {
 			available = append(available, sd)
@@ -1538,7 +1553,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	// Try to match by number first
-	var target *sessionData
+	var target *SessionData
 	if n := parseResumeNumber(arg); n > 0 && n <= len(available) {
 		target = &available[n-1]
 	} else {
@@ -1569,7 +1584,7 @@ func (m *tuiModel) handleResume(arg string) (tea.Model, tea.Cmd) {
 
 // resumeSession creates a new tab from saved session data, restoring
 // conversation history, display lines, and metadata.
-func (m *tuiModel) resumeSession(data *sessionData) *session {
+func (m *tuiModel) resumeSession(data *SessionData) *session {
 	// Restore the model/provider from persisted session, or fall back to default.
 	provider := m.defaultProvider
 	if data.Model != "" {
@@ -1578,7 +1593,7 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 			provider = p
 		}
 	}
-	s := newSession(m.nextID, provider, m.cwd, m.msgCh)
+	s := newSession(m.nextID, provider, m.rt, m.cwd, m.msgCh)
 	m.nextID++
 	m.wireTools(s)
 	m.sessions = append(m.sessions, s)
@@ -1592,13 +1607,13 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 	s.contextUsed = data.ContextUsed
 
 	// Restore agent state
-	s.agent.SetMessages(data.Messages)
-	s.agent.SetPermissionMode(parseModeString(data.PermissionMode))
+	s.agentSession.SetMessages(data.Messages)
+	s.agentSession.SetPermissionMode(parseModeString(data.PermissionMode))
 	// Reset always-allow flags — don't carry over from previous runs
 	// since the user may have forgotten what they allowed.
 
 	// Restore input prompt style for terminal mode
-	if s.agent.GetPermissionMode() == agent.ModeTerminal {
+	if s.agentSession.GetPermissionMode() == agent.ModeTerminal {
 		s.input.Prompt = "$ "
 		s.input.Placeholder = inputPlaceholder(agent.ModeTerminal)
 	}
@@ -1609,12 +1624,12 @@ func (m *tuiModel) resumeSession(data *sessionData) *session {
 	s.rebuildHistory()
 	ts := time.Now().UTC().Format("Jan 2, 2006 15:04 UTC")
 	s.appendLine(line{Type: lineSessionStart, Data: "resumed\x00" + ts})
-	if entries := s.agent.Registry().CustomToolInfo(); len(entries) > 0 {
+	if entries := s.agentSession.Registry().CustomToolInfo(); len(entries) > 0 {
 		s.appendLine(line{Type: lineToolsLoaded, Data: formatToolEntries(entries)})
 	}
 
 	// Save with updated tab order (now has a tab)
-	saveSession(m.cwd, s, len(m.sessions))
+	m.saveSession(s, len(m.sessions))
 
 	return s
 }
@@ -1659,7 +1674,7 @@ func formatAge(t time.Time) string {
 }
 
 // sessionPreview returns a short preview of the session's last user message.
-func sessionPreview(sd sessionData) string {
+func sessionPreview(sd SessionData) string {
 	// Find the last user text
 	for i := len(sd.Lines) - 1; i >= 0; i-- {
 		if sd.Lines[i].Type == linePrompt {
@@ -1724,9 +1739,9 @@ func (m tuiModel) View() tea.View {
 		}
 	case tuiStateRunning:
 		dots := strings.Repeat(".", m.dotFrame%4) + strings.Repeat(" ", 3-m.dotFrame%4)
-		if s.agent.GetPermissionMode() == agent.ModeTerminal {
+		if s.agentSession.GetPermissionMode() == agent.ModeTerminal {
 			promptContent = tuiStatus.Render(" running"+dots+" ") + tuiDim.Render("(ctrl+c to interrupt)")
-		} else if s.agent.GetPermissionMode() == agent.ModePlan {
+		} else if s.agentSession.GetPermissionMode() == agent.ModePlan {
 			promptContent = tuiStatus.Render(" planning"+dots+" ") + tuiDim.Render("(extended thinking · ctrl+c to interrupt)")
 		} else {
 			promptContent = tuiStatus.Render(" thinking"+dots+" ") + tuiDim.Render("(ctrl+c to interrupt)")
@@ -1921,10 +1936,13 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 	for i, s := range m.sessions {
 		label := s.name
 
+		isRemote := s.runtime != nil && s.runtime.Kind() == RuntimeRemote
 		var style lipgloss.Style
 		if i == m.active {
 			if m.tabFocused && !m.newTabFocused {
 				style = tuiTabActiveFocused
+			} else if isRemote {
+				style = tuiTabRemoteActive
 			} else {
 				style = tuiTabActive
 			}
@@ -1932,6 +1950,8 @@ func (m tuiModel) buildTabInfos() []tabInfo {
 			style = tuiTabNeedsAttention
 		} else if s.state == tuiStateRunning {
 			style = tuiTabRunning
+		} else if isRemote {
+			style = tuiTabRemote
 		} else {
 			style = tuiTabInactive
 		}
@@ -2123,10 +2143,19 @@ func (m tuiModel) renderTabBar(boxWidth int) (string, string) {
 
 // ─── TUI helpers ─────────────────────────────────────────────────────────────
 
+// saveSession persists a session to disk. Sessions with no conversation history
+// are not saved.
+func (m *tuiModel) saveSession(s *session, tabOrder int) {
+	if len(s.agentSession.Messages()) == 0 {
+		return
+	}
+	m.store.Save(s.toSessionData(tabOrder))
+}
+
 // saveAllSessions persists every open session to disk with its tab position.
 func (m *tuiModel) saveAllSessions() {
 	for i, s := range m.sessions {
-		saveSession(m.cwd, s, i+1) // 1-based tab order
+		m.saveSession(s, i+1) // 1-based tab order
 	}
 }
 

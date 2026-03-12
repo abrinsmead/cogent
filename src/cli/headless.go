@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -14,14 +15,15 @@ type Headless struct {
 	provider api.Provider
 	cwd      string
 	prompt   string
+	rt       Runtime
 }
 
-func NewHeadless(provider api.Provider, cwd, prompt string) *Headless {
-	return &Headless{provider: provider, cwd: cwd, prompt: prompt}
+func NewHeadless(provider api.Provider, cwd, prompt string, rt Runtime) *Headless {
+	return &Headless{provider: provider, cwd: cwd, prompt: prompt, rt: rt}
 }
 
 func (h *Headless) Run() error {
-	ag := agent.New(h.provider, h.cwd,
+	as, err := h.rt.NewSession(h.provider, h.cwd,
 		agent.WithPermissionMode(agent.ModeYOLO),
 		agent.WithTextCallback(func(text string) {
 			fmt.Printf("%s%s%s\n\n", Dim, text, Reset)
@@ -56,7 +58,10 @@ func (h *Headless) Run() error {
 			}
 		}),
 	)
+	if err != nil {
+		return fmt.Errorf("creating session: %w", err)
+	}
 
 	fmt.Printf("%s> %s%s\n", Green, h.prompt, Reset)
-	return ag.Send(h.prompt)
+	return as.SendCtx(context.Background(), h.prompt)
 }
