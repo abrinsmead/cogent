@@ -86,8 +86,14 @@ func newSession(id int, provider api.Provider, cwd string, msgCh chan tea.Msg) *
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter"), key.WithHelp("shift+enter", "insert newline"))
 	styles := ta.Styles()
-	styles.Focused.CursorLine = lipgloss.NewStyle()
-	styles.Blurred.CursorLine = lipgloss.NewStyle()
+	styles.Focused.Base = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styles.Blurred.Base = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styles.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styles.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styles.Focused.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	styles.Blurred.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	styles.Focused.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	styles.Blurred.CursorLine = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	ta.SetStyles(styles)
 	ta.Focus()
 

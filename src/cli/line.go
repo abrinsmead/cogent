@@ -224,15 +224,15 @@ var (
 	mdTableRow   = regexp.MustCompile(`^\s*\|.*\|`)
 	mdTableSep   = regexp.MustCompile(`^\s*\|[ :-]+\|`)
 
-	mdStyleBold       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
-	mdStyleItalic     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("5"))
+	mdStyleBold       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
+	mdStyleItalic     = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("7"))
 	mdStyleInlineCode = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
-	mdStyleHeading    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	mdStyleHeading    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
 	mdStyleCodeBlock  = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Background(lipgloss.Color("236"))
-	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	mdStyleText       = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	mdStyleBullet     = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	mdStyleText       = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 	mdStyleTableBorder = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	mdStyleTableHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
+	mdStyleTableHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("7"))
 )
 
 func renderMarkdown(text string) string {
